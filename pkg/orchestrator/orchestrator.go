@@ -18,8 +18,14 @@ type OrchestratorRequest struct {
 	// SystemPrompt is the system message for the agent.
 	SystemPrompt string
 
-	// RepoInstructions contains AGENT.md/CLAUDE.md content.
+	// RepoInstructions contains repository instruction content.
+	// If non-empty, this is used directly instead of loading from files.
 	RepoInstructions string
+
+	// InstructionFiles overrides the default instruction file names
+	// (e.g., []string{"AGENT.md", "AGENTS.md"}) when loading from the repository.
+	// Ignored if RepoInstructions is already set.
+	InstructionFiles []string
 
 	// InitialMessages are the starting messages for the conversation.
 	InitialMessages []llm.Message

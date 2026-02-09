@@ -20,7 +20,7 @@ func (m *mockAgentRunner) Call(ctx context.Context, req llm.AgentRequest) (llm.A
 		return llm.AgentResponse{
 			StopReason: llm.StopReasonEndTurn,
 			Content: []llm.ContentBlock{
-				{Type: llm.ContentTypeText, Text: `{"decision":"proceed","summary":"done"}`},
+				{Type: llm.ContentTypeText, Text: "done"},
 			},
 		}, nil
 	}
@@ -39,7 +39,9 @@ func TestAPIAgentCapabilities(t *testing.T) {
 		MaxTokens: 4096,
 	}
 
-	agent := NewAPIAgent(runner, registry, APIAgentOptions{})
+	agent := NewAPIAgent(runner, registry, APIAgentOptions{
+		MaxContextTokens: 128000,
+	})
 	caps := agent.Capabilities()
 
 	if !caps.SupportsTools {
@@ -51,130 +53,37 @@ func TestAPIAgentCapabilities(t *testing.T) {
 	if !caps.SupportsCompaction {
 		t.Error("expected SupportsCompaction to be true")
 	}
-}
-
-func TestBuildUserPrompt(t *testing.T) {
-	tests := []struct {
-		name     string
-		req      AgentRequest
-		contains []string
-	}{
-		{
-			name: "with task",
-			req: AgentRequest{
-				Task: "Fix the bug",
-			},
-			contains: []string{"Fix the bug"},
-		},
-		{
-			name: "with issue context",
-			req: AgentRequest{
-				Context: AgentContext{
-					RepoFullName: "owner/repo",
-					IssueNumber:  123,
-					IssueTitle:   "Bug in login",
-					IssueBody:    "Login fails",
-				},
-			},
-			contains: []string{"owner/repo", "Task Context", "Task ID: issue-123", "Bug in login", "Login fails"},
-		},
-		{
-			name: "with PR context",
-			req: AgentRequest{
-				Context: AgentContext{
-					PRNumber:  456,
-					PRTitle:   "Fix login",
-					PRHeadRef: "fix-login",
-					PRBaseRef: "main",
-				},
-			},
-			contains: []string{"Task Context", "Task ID: pr-456", "Fix login", "fix-login", "main"},
-		},
-		{
-			name: "with generic task context",
-			req: AgentRequest{
-				Context: AgentContext{
-					TaskID:    "task-789",
-					TaskTitle: "Migrate SDK",
-					TaskBody:  "Copy generic packages",
-				},
-			},
-			contains: []string{"Task Context", "Task ID: task-789", "Migrate SDK", "Copy generic packages"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			prompt := buildUserPrompt(tt.req)
-			for _, s := range tt.contains {
-				if !containsString(prompt, s) {
-					t.Errorf("expected prompt to contain %q, got: %s", s, prompt)
-				}
-			}
-		})
+	if caps.MaxContextTokens != 128000 {
+		t.Errorf("expected MaxContextTokens 128000, got %d", caps.MaxContextTokens)
 	}
 }
 
-func containsString(s, substr string) bool {
-	return len(s) > 0 && len(substr) > 0 && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || containsString(s[1:], substr)))
-}
+func TestAPIAgentCapabilitiesDefaultContextTokens(t *testing.T) {
+	registry := tools.NewRegistry()
 
-func TestParseStructuredResponse(t *testing.T) {
-	tests := []struct {
-		name     string
-		text     string
-		decision Decision
-		summary  string
-	}{
-		{
-			name:     "proceed decision",
-			text:     `{"decision":"proceed","summary":"Changes made"}`,
-			decision: DecisionProceed,
-			summary:  "Changes made",
-		},
-		{
-			name:     "needs_info decision",
-			text:     `{"decision":"needs_info","summary":"Need more details"}`,
-			decision: DecisionNeedsInfo,
-			summary:  "Need more details",
-		},
-		{
-			name:     "stop decision",
-			text:     `{"decision":"stop","summary":"Cannot automate"}`,
-			decision: DecisionStop,
-			summary:  "Cannot automate",
-		},
-		{
-			name:     "plain text",
-			text:     "Just some text without JSON",
-			decision: DecisionProceed,
-			summary:  "Just some text without JSON",
-		},
+	runner := llm.AgentRunner{
+		BaseURL:   "https://api.example.com",
+		APIKey:    "test-key",
+		Model:     "test-model",
+		MaxTokens: 4096,
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := AgentResult{}
-			parseStructuredResponse(&result, tt.text)
-			if result.Decision != tt.decision {
-				t.Errorf("expected decision %s, got %s", tt.decision, result.Decision)
-			}
-		})
+	agent := NewAPIAgent(runner, registry, APIAgentOptions{})
+	caps := agent.Capabilities()
+
+	if caps.MaxContextTokens != 0 {
+		t.Errorf("expected MaxContextTokens 0 (unset), got %d", caps.MaxContextTokens)
 	}
 }
 
 func TestRunnerAdapterConversion(t *testing.T) {
 	req := llm.Request{
-		Mode:         "issue",
+		Mode:         "task",
 		RepoFullName: "owner/repo",
 		TaskID:       "task-123",
 		TaskTitle:    "Test task",
 		TaskBody:     "Task body",
-		IssueNumber:  123,
-		IssueTitle:   "Test issue",
-		IssueBody:    "Issue body",
-		IssueLabels:  []string{"bug"},
-		IssueComments: []llm.Comment{
+		TaskComments: []llm.Comment{
 			{User: "user1", Body: "Comment 1"},
 		},
 	}
@@ -193,22 +102,16 @@ func TestRunnerAdapterConversion(t *testing.T) {
 	if agentReq.Context.TaskTitle != "Test task" {
 		t.Errorf("expected task title Test task, got %s", agentReq.Context.TaskTitle)
 	}
-	if agentReq.Context.IssueNumber != 123 {
-		t.Errorf("expected issue 123, got %d", agentReq.Context.IssueNumber)
-	}
-	if len(agentReq.Context.IssueComments) != 1 {
-		t.Errorf("expected 1 comment, got %d", len(agentReq.Context.IssueComments))
+	if len(agentReq.Context.TaskComments) != 1 {
+		t.Errorf("expected 1 comment, got %d", len(agentReq.Context.TaskComments))
 	}
 }
 
 func TestConvertToRunResult(t *testing.T) {
 	result := AgentResult{
-		Success:       true,
-		Decision:      DecisionProceed,
-		Summary:       "Test summary",
-		CommitMessage: "fix: test commit",
-		PRTitle:       "Test PR",
-		PRBody:        "PR body",
+		Success:  true,
+		Decision: DecisionProceed,
+		Summary:  "Test summary",
 		FileChanges: []FileChange{
 			{Path: "file.go", Content: "package main", Operation: FileOpModify},
 		},

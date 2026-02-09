@@ -21,13 +21,6 @@ const (
 	defaultMaxMessages   = 50
 )
 
-const defaultSystemPrompt = `You are an autonomous engineering agent.
-Work in an observe -> plan -> act -> verify loop:
-- Inspect the repository before editing.
-- Make minimal, high-confidence changes.
-- Run validation relevant to your edits.
-- If critical information is missing, explain clearly and stop.`
-
 // generateToolUseID generates a unique ID for tool_use blocks that have empty IDs.
 // This is needed because some LLM APIs may return tool_use blocks without IDs,
 // but the API requires matching IDs between tool_use and tool_result.
@@ -35,9 +28,9 @@ func generateToolUseID() string {
 	b := make([]byte, 12)
 	if _, err := rand.Read(b); err != nil {
 		// Fallback to a simple counter-based ID if crypto/rand fails
-		return fmt.Sprintf("toolu_%d", time.Now().UnixNano())
+		return fmt.Sprintf("tool_%d", time.Now().UnixNano())
 	}
-	return "toolu_" + hex.EncodeToString(b)
+	return "tool_" + hex.EncodeToString(b)
 }
 
 // validateToolPairs checks that all tool_results have matching tool_uses in the messages.
@@ -119,10 +112,10 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 		toolCtx = tools.NewToolContext(req.WorkDir)
 	}
 
-	// Read CLAUDE.md or AGENT.md from repo root if repo instructions not provided
+	// Read repository instruction files from repo root if repo instructions not provided
 	repoInstructions := req.RepoInstructions
 	if repoInstructions == "" && req.WorkDir != "" {
-		repoInstructions = readRepoInstructions(req.WorkDir)
+		repoInstructions = readRepoInstructions(req.WorkDir, req.InstructionFiles)
 	}
 
 	// Build tool definitions from registry
@@ -396,10 +389,9 @@ func buildSystemPrompt(base, repoInstructions string) string {
 	parts := []string{}
 
 	base = strings.TrimSpace(base)
-	if base == "" {
-		base = defaultSystemPrompt
+	if base != "" {
+		parts = append(parts, base)
 	}
-	parts = append(parts, base)
 
 	repoInstructions = strings.TrimSpace(repoInstructions)
 	if repoInstructions != "" {
@@ -416,11 +408,16 @@ func buildSystemPrompt(base, repoInstructions string) string {
 }
 
 // readRepoInstructions loads repository instructions from repo root to workDir.
-func readRepoInstructions(workDir string) string {
-	result := instructions.Load(workDir, instructions.LoadOptions{
-		CandidateFiles: []string{"AGENT.md", "AGENTS.md", "CLAUDE.md"},
-		MaxBytes:       instructions.DefaultMaxBytes,
-	})
+// If instructionFiles is non-empty, those file names are used as candidates;
+// otherwise the default candidate list from the instructions package is used.
+func readRepoInstructions(workDir string, instructionFiles []string) string {
+	opts := instructions.LoadOptions{
+		MaxBytes: instructions.DefaultMaxBytes,
+	}
+	if len(instructionFiles) > 0 {
+		opts.CandidateFiles = instructionFiles
+	}
+	result := instructions.Load(workDir, opts)
 
 	combined := strings.TrimSpace(result.Content)
 	if combined != "" {
@@ -430,7 +427,7 @@ func readRepoInstructions(workDir string) string {
 			len(result.Content),
 			truncatedSuffix(result.Truncated))
 	} else {
-		log.Printf("[orchestrator] no repository instructions found in %s (checked AGENT.md/AGENTS.md/CLAUDE.md)", workDir)
+		log.Printf("[orchestrator] no repository instructions found in %s", workDir)
 	}
 
 	skillBlock, skillCount, skillTruncated := buildSkillMetadata(workDir)

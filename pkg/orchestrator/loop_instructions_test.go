@@ -18,7 +18,7 @@ func TestReadRepoInstructionsAggregatesRootToLeafAndPrefersAgent(t *testing.T) {
 	mustWriteText(t, filepath.Join(repo, "services", "AGENT.md"), "services rules")
 	mustWriteText(t, filepath.Join(leaf, "AGENT.md"), "api rules")
 
-	got := readRepoInstructions(leaf)
+	got := readRepoInstructions(leaf, nil)
 	if strings.Contains(got, "root claude rules") {
 		t.Fatalf("expected AGENT.md to win over CLAUDE.md in same directory, got: %q", got)
 	}
@@ -60,7 +60,7 @@ description: test description
 `)
 
 	t.Setenv("CODEX_SKILL_DIRS", skillsDir)
-	got := readRepoInstructions(repo)
+	got := readRepoInstructions(repo, nil)
 	if !strings.Contains(got, "Available Skills") {
 		t.Fatalf("expected Available Skills block in instructions, got: %q", got)
 	}

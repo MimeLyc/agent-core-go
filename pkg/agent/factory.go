@@ -36,8 +36,8 @@ type AgentConfig struct {
 	// API contains configuration for APIAgent.
 	API *APIConfig
 
-	// ClaudeCode contains configuration for ClaudeCodeAgent.
-	ClaudeCode *ClaudeCodeConfig
+	// CLI contains configuration for CLI-based agents.
+	CLI *CLIAgentConfig
 
 	// Registry is the tool registry (used by APIAgent).
 	Registry *tools.Registry
@@ -46,7 +46,7 @@ type AgentConfig struct {
 // APIConfig contains configuration for the API-based agent.
 type APIConfig struct {
 	// ProviderType specifies which LLM provider to use ("claude", "openai").
-	// If empty, defaults to "claude".
+	// Must be set explicitly by the caller.
 	ProviderType llm.LLMProviderType
 
 	// BaseURL is the LLM API base URL.
@@ -145,14 +145,13 @@ func newAPIAgentFromConfig(cfg AgentConfig) (*APIAgent, error) {
 
 // newCLIAgentFromConfig creates a CLIAgent from configuration.
 func newCLIAgentFromConfig(cfg AgentConfig) (*CLIAgent, error) {
-	if cfg.ClaudeCode == nil {
-		// Use defaults
-		cfg.ClaudeCode = &ClaudeCodeConfig{}
+	if cfg.CLI == nil {
+		return nil, fmt.Errorf("CLI configuration is required for cli agent type")
 	}
 
-	cliCfg := cfg.ClaudeCode
+	cliCfg := cfg.CLI
 	if cliCfg.Command == "" {
-		cliCfg.Command = "claude"
+		return nil, fmt.Errorf("CLI command is required")
 	}
 	if cliCfg.Timeout <= 0 {
 		cliCfg.Timeout = 30 * time.Minute
@@ -163,7 +162,8 @@ func newCLIAgentFromConfig(cfg AgentConfig) (*CLIAgent, error) {
 		return nil, fmt.Errorf("CLI command not found: %s", cliCfg.Command)
 	}
 
-	return NewClaudeCodeAgent(*cliCfg), nil
+	client := NewClaudeCodeClient(*cliCfg)
+	return NewCLIAgent(client, *cliCfg), nil
 }
 
 // autoDetectAgent automatically selects the best available agent.
@@ -176,28 +176,15 @@ func autoDetectAgent(cfg AgentConfig) (Agent, error) {
 		return newAPIAgentFromConfig(cfg)
 	}
 
-	// Second, try CLI agent if available
-	if cfg.ClaudeCode != nil {
-		cmd := cfg.ClaudeCode.Command
-		if cmd == "" {
-			cmd = "claude"
-		}
-		if _, err := exec.LookPath(cmd); err == nil {
-			log.Printf("[agent-factory] CLI command found (%s), using cli agent", cmd)
+	// Second, try CLI agent if configured and available
+	if cfg.CLI != nil && cfg.CLI.Command != "" {
+		if _, err := exec.LookPath(cfg.CLI.Command); err == nil {
+			log.Printf("[agent-factory] CLI command found (%s), using cli agent", cfg.CLI.Command)
 			return newCLIAgentFromConfig(cfg)
-		}
-	} else {
-		// Check if claude is available even without config
-		if _, err := exec.LookPath("claude"); err == nil {
-			log.Printf("[agent-factory] claude command found, using cli agent")
-			return newCLIAgentFromConfig(AgentConfig{
-				Type:       AgentTypeCLI,
-				ClaudeCode: &ClaudeCodeConfig{},
-			})
 		}
 	}
 
-	return nil, fmt.Errorf("no agent available: configure API credentials or install a CLI agent (e.g., Claude Code)")
+	return nil, fmt.Errorf("no agent available: configure API credentials or provide a CLI agent command")
 }
 
 // MustNewAgent creates a new agent or panics on error.

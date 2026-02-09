@@ -15,7 +15,6 @@ const (
 var defaultCandidateFiles = []string{
 	"AGENT.md",
 	"AGENTS.md",
-	"CLAUDE.md",
 }
 
 // LoadOptions controls repository instruction discovery.

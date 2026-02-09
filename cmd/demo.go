@@ -36,16 +36,12 @@ func main() {
 		MaxIterations: 8,
 		MaxMessages:   30,
 		MaxTokens:     1024,
+		SystemPrompt:  "You are a helpful assistant. Analyze the repository and respond with a brief summary.",
 	})
 
 	result, err := a.Execute(context.Background(), agent.AgentRequest{
+		Task:    "List the files in the current directory and return a short JSON response with a summary of what you found.",
 		WorkDir: ".",
-		Context: agent.AgentContext{
-			RepoFullName: "demo/local-repo",
-			TaskID:       "DEMO-1",
-			TaskTitle:    "Run agent-core-go demo",
-			TaskBody:     "Return a short JSON response with decision and summary.",
-		},
 	})
 	if err != nil {
 		panic(err)

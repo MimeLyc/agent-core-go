@@ -19,7 +19,7 @@ const (
 	DefaultCompactThresh   = 30
 	DefaultCompactKeep     = 10
 	DefaultAgentType       = "api"
-	DefaultProviderType    = "claude"
+	DefaultProviderType    = ""
 )
 
 // MCPServerConfig configures an MCP server connection for agent tools.

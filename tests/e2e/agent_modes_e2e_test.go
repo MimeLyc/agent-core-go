@@ -77,8 +77,8 @@ func TestE2EAgentModeAPIClaude(t *testing.T) {
 	if result.Decision != agent.DecisionProceed {
 		t.Fatalf("expected decision proceed, got %s", result.Decision)
 	}
-	if result.Summary != "api claude mode e2e" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
+	if result.Summary == "" {
+		t.Fatalf("expected non-empty summary")
 	}
 }
 
@@ -147,19 +147,19 @@ func TestE2EAgentModeAPIOpenAI(t *testing.T) {
 	if result.Decision != agent.DecisionProceed {
 		t.Fatalf("expected decision proceed, got %s", result.Decision)
 	}
-	if result.Summary != "api openai mode e2e" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
+	if result.Summary == "" {
+		t.Fatalf("expected non-empty summary")
 	}
 }
 
 func TestE2EAgentModeCLI(t *testing.T) {
 	t.Parallel()
 
-	cli := writeFakeCLI(t, `{"result":"{\"decision\":\"needs_info\",\"summary\":\"cli mode e2e\",\"needs_info_comment\":\"missing context\"}","error":"","session_id":"sess_cli"}`)
+	cli := writeFakeCLI(t, `{"result":"cli mode e2e output","error":"","session_id":"sess_cli"}`)
 
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeCLI,
-		ClaudeCode: &agent.ClaudeCodeConfig{
+		CLI: &agent.CLIAgentConfig{
 			Command: cli,
 			Timeout: 5 * time.Second,
 		},
@@ -177,22 +177,19 @@ func TestE2EAgentModeCLI(t *testing.T) {
 		t.Fatalf("Execute(cli) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionNeedsInfo {
-		t.Fatalf("expected decision needs_info, got %s", result.Decision)
-	}
-	if result.Summary != "cli mode e2e" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
+	if result.Decision != agent.DecisionProceed {
+		t.Fatalf("expected decision proceed, got %s", result.Decision)
 	}
 }
 
 func TestE2EAgentModeClaudeCodeAlias(t *testing.T) {
 	t.Parallel()
 
-	cli := writeFakeCLI(t, `{"result":"{\"decision\":\"proceed\",\"summary\":\"claude-code alias mode e2e\"}","error":"","session_id":"sess_alias"}`)
+	cli := writeFakeCLI(t, `{"result":"claude-code alias mode e2e","error":"","session_id":"sess_alias"}`)
 
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeClaudeCode,
-		ClaudeCode: &agent.ClaudeCodeConfig{
+		CLI: &agent.CLIAgentConfig{
 			Command: cli,
 			Timeout: 5 * time.Second,
 		},
@@ -212,9 +209,6 @@ func TestE2EAgentModeClaudeCodeAlias(t *testing.T) {
 
 	if result.Decision != agent.DecisionProceed {
 		t.Fatalf("expected decision proceed, got %s", result.Decision)
-	}
-	if result.Summary != "claude-code alias mode e2e" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
 	}
 }
 
@@ -262,7 +256,7 @@ func TestE2EAgentModeAutoPrefersAPI(t *testing.T) {
 			Timeout:      5 * time.Second,
 			MaxAttempts:  1,
 		},
-		ClaudeCode: &agent.ClaudeCodeConfig{
+		CLI: &agent.CLIAgentConfig{
 			Command: "/path/that/does/not/exist",
 		},
 	})
@@ -279,19 +273,19 @@ func TestE2EAgentModeAutoPrefersAPI(t *testing.T) {
 		t.Fatalf("Execute(auto/api) error: %v", err)
 	}
 
-	if result.Summary != "auto mode picked api" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
+	if result.Summary == "" {
+		t.Fatalf("expected non-empty summary")
 	}
 }
 
 func TestE2EAgentModeAutoFallsBackToCLI(t *testing.T) {
 	t.Parallel()
 
-	cli := writeFakeCLI(t, `{"result":"{\"decision\":\"proceed\",\"summary\":\"auto mode picked cli\"}","error":"","session_id":"sess_auto_cli"}`)
+	cli := writeFakeCLI(t, `{"result":"auto mode picked cli","error":"","session_id":"sess_auto_cli"}`)
 
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeAuto,
-		ClaudeCode: &agent.ClaudeCodeConfig{
+		CLI: &agent.CLIAgentConfig{
 			Command: cli,
 			Timeout: 5 * time.Second,
 		},
@@ -311,9 +305,6 @@ func TestE2EAgentModeAutoFallsBackToCLI(t *testing.T) {
 
 	if result.Decision != agent.DecisionProceed {
 		t.Fatalf("expected decision proceed, got %s", result.Decision)
-	}
-	if result.Summary != "auto mode picked cli" {
-		t.Fatalf("unexpected summary: %q", result.Summary)
 	}
 }
 

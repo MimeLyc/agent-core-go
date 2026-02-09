@@ -15,7 +15,7 @@ type AgentRequest struct {
 	// SystemPrompt is the system message for the agent.
 	SystemPrompt string
 
-	// RepoInstructions contains AGENT.md/CLAUDE.md content.
+	// RepoInstructions contains repository instruction content.
 	RepoInstructions string
 
 	// WorkDir is the working directory for tool execution.
@@ -37,7 +37,7 @@ type AgentContext struct {
 	RepoFullName string
 	RepoPath     string
 
-	// Generic task context (preferred for SDK users).
+	// Generic task context.
 	TaskID       string
 	TaskTitle    string
 	TaskBody     string
@@ -46,19 +46,6 @@ type AgentContext struct {
 
 	// Metadata carries arbitrary task attributes from external systems.
 	Metadata map[string]string
-
-	// Legacy Issue/PR context (backward compatibility with webhook-driven integrations).
-	IssueNumber   int
-	IssueTitle    string
-	IssueBody     string
-	IssueLabels   []string
-	IssueComments []IssueComment
-
-	PRNumber  int
-	PRTitle   string
-	PRBody    string
-	PRHeadRef string
-	PRBaseRef string
 
 	// Trigger payload (for command-style invocations).
 	CommentBody  string
@@ -73,9 +60,6 @@ type TaskComment struct {
 	User string
 	Body string
 }
-
-// IssueComment is kept as an alias for backward compatibility.
-type IssueComment = TaskComment
 
 // AgentOptions configures agent execution behavior.
 type AgentOptions struct {
@@ -153,18 +137,6 @@ type AgentResult struct {
 
 	// Message is the detailed response or explanation.
 	Message string
-
-	// NeedsInfoComment is the comment to post if Decision is NeedsInfo.
-	NeedsInfoComment string
-
-	// CommitMessage is the suggested commit message.
-	CommitMessage string
-
-	// PRTitle is the suggested PR title.
-	PRTitle string
-
-	// PRBody is the suggested PR body.
-	PRBody string
 
 	// FileChanges lists all file modifications made.
 	FileChanges []FileChange

@@ -128,11 +128,6 @@ func (a *CLIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 		TimeoutSeconds: int(a.config.Timeout.Seconds()),
 	}
 
-	// Build task from context if not provided
-	if req.Task == "" {
-		cliReq.Task = buildUserPrompt(req)
-	}
-
 	// Execute
 	cliResp, err := a.client.Execute(ctx, cliReq)
 	if err != nil {
@@ -202,9 +197,6 @@ type ClaudeCodeClient struct {
 // NewClaudeCodeClient creates a new ClaudeCodeClient.
 func NewClaudeCodeClient(cfg CLIAgentConfig) *ClaudeCodeClient {
 	cmd := cfg.Command
-	if cmd == "" {
-		cmd = "claude"
-	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Minute
@@ -331,40 +323,8 @@ func (c *ClaudeCodeClient) parseTextOutput(text string) (CLIResponse, error) {
 	}, nil
 }
 
-// parseResultContent parses the result content which may contain structured response.
+// parseResultContent parses the result content.
 func (c *ClaudeCodeClient) parseResultContent(content string) (CLIResponse, error) {
-	// Try to parse as our expected response format
-	var resp struct {
-		Decision         string            `json:"decision"`
-		NeedsInfoComment string            `json:"needs_info_comment"`
-		CommitMessage    string            `json:"commit_message"`
-		PRTitle          string            `json:"pr_title"`
-		PRBody           string            `json:"pr_body"`
-		Summary          string            `json:"summary"`
-		Files            map[string]string `json:"files"`
-	}
-
-	if err := json.Unmarshal([]byte(content), &resp); err == nil && resp.Decision != "" {
-		// Convert files to FileChanges
-		var fileChanges []FileChange
-		for path, content := range resp.Files {
-			fileChanges = append(fileChanges, FileChange{
-				Path:      path,
-				Content:   content,
-				Operation: FileOpModify,
-			})
-		}
-
-		return CLIResponse{
-			Success:     true,
-			Decision:    resp.Decision,
-			Summary:     resp.Summary,
-			Message:     content,
-			FileChanges: fileChanges,
-		}, nil
-	}
-
-	// Return as-is
 	return CLIResponse{
 		Success:  true,
 		Decision: "proceed",
@@ -373,13 +333,12 @@ func (c *ClaudeCodeClient) parseResultContent(content string) (CLIResponse, erro
 	}, nil
 }
 
-// GetCapabilities returns Claude Code's capabilities.
+// GetCapabilities returns the CLI agent's capabilities.
 func (c *ClaudeCodeClient) GetCapabilities(ctx context.Context) (AgentCapabilities, error) {
 	return AgentCapabilities{
 		SupportsTools:      true,
 		SupportsStreaming:  true,
 		SupportsCompaction: true,
-		MaxContextTokens:   200000,
 		Provider:           "cli",
 	}, nil
 }

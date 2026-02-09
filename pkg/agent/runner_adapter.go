@@ -53,14 +53,14 @@ func (a *RunnerAdapter) Run(ctx context.Context, req llm.Request, workDir string
 func convertLLMRequest(req llm.Request, workDir, systemPrompt string) AgentRequest {
 	// Convert comments
 	var comments []TaskComment
-	for _, c := range req.IssueComments {
+	for _, c := range req.TaskComments {
 		comments = append(comments, TaskComment{
 			User: c.User,
 			Body: c.Body,
 		})
 	}
 	if len(comments) == 0 {
-		for _, c := range req.TaskComments {
+		for _, c := range req.IssueComments {
 			comments = append(comments, TaskComment{
 				User: c.User,
 				Body: c.Body,
@@ -74,27 +74,17 @@ func convertLLMRequest(req llm.Request, workDir, systemPrompt string) AgentReque
 		RepoInstructions: req.RepoInstructions,
 		WorkDir:          workDir,
 		Context: AgentContext{
-			RepoFullName:  req.RepoFullName,
-			RepoPath:      req.RepoPath,
-			TaskID:        req.TaskID,
-			TaskTitle:     req.TaskTitle,
-			TaskBody:      req.TaskBody,
-			TaskLabels:    req.TaskLabels,
-			TaskComments:  comments,
-			Metadata:      req.Metadata,
-			IssueNumber:   req.IssueNumber,
-			IssueTitle:    req.IssueTitle,
-			IssueBody:     req.IssueBody,
-			IssueLabels:   req.IssueLabels,
-			IssueComments: comments,
-			PRNumber:      req.PRNumber,
-			PRTitle:       req.PRTitle,
-			PRBody:        req.PRBody,
-			PRHeadRef:     req.PRHeadRef,
-			PRBaseRef:     req.PRBaseRef,
-			CommentBody:   req.CommentBody,
-			SlashCommand:  req.SlashCommand,
-			Requirements:  req.Requirements,
+			RepoFullName: req.RepoFullName,
+			RepoPath:     req.RepoPath,
+			TaskID:       req.TaskID,
+			TaskTitle:    req.TaskTitle,
+			TaskBody:     req.TaskBody,
+			TaskLabels:   req.TaskLabels,
+			TaskComments: comments,
+			Metadata:     req.Metadata,
+			CommentBody:  req.CommentBody,
+			SlashCommand: req.SlashCommand,
+			Requirements: req.Requirements,
 		},
 	}
 
@@ -124,13 +114,9 @@ func convertToRunResult(result AgentResult) llm.RunResult {
 
 	return llm.RunResult{
 		Response: llm.Response{
-			Decision:         decision,
-			NeedsInfoComment: result.NeedsInfoComment,
-			CommitMessage:    result.CommitMessage,
-			PRTitle:          result.PRTitle,
-			PRBody:           result.PRBody,
-			Files:            files,
-			Summary:          result.Summary,
+			Decision: decision,
+			Files:    files,
+			Summary:  result.Summary,
 		},
 		Stdout: result.Message,
 	}
