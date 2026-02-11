@@ -1,8 +1,8 @@
 # agent-core-go
 
-A reusable Go SDK for agent-loop orchestration, LLM provider abstraction, tool execution, instruction loading, and skill discovery.
+A reusable Go SDK for agent-loop orchestration, LLM provider abstraction, tool execution, instruction loading, and Claude-Code-style skills.
 
-This repository provides a **generic, provider-agnostic** agent framework. No business logic, no hardcoded defaults — callers configure everything explicitly.
+This repository provides a **generic, provider-agnostic** agent framework. It includes a standard skill loop (`list_skills` / `read_skill` / `use_skill`), slash-skill invocation support, and strict tool policy enforcement driven by skill metadata.
 
 ## What Is Included
 
@@ -11,7 +11,7 @@ This repository provides a **generic, provider-agnostic** agent framework. No bu
 - `pkg/llm`: provider abstraction and implementations (Claude API and OpenAI-compatible APIs).
 - `pkg/tools`: tool contracts, registry, execution context, built-in tools.
 - `pkg/instructions`: layered loading for `AGENT.md` / `AGENTS.md`.
-- `pkg/skills`: skill discovery and metadata rendering.
+- `pkg/skills`: skill discovery, precedence resolution, invocation rendering, and allow-policy matching.
 - `pkg/mcp`: MCP client/server protocol helpers.
 
 ## Installation
@@ -72,6 +72,28 @@ func main() {
 }
 ```
 
+Run the included demo (`cmd/demo.go`):
+
+```bash
+export OPENAI_API_KEY=...
+go run ./cmd
+```
+
+The demo uses API mode with built-in tools and prints decision/summary from the agent result.
+
+## Agent Modes
+
+The factory supports four modes through `agent.AgentConfig.Type`:
+
+| Type | Behavior |
+|------|----------|
+| `api` | Runs local orchestrator + configured LLM provider (`claude` or `openai`) |
+| `cli` | Runs an external CLI agent process |
+| `claude-code` | Alias of `cli` (backward compatibility) |
+| `auto` | Prefers API when API config is valid; otherwise falls back to CLI if command exists |
+
+E2E coverage for all modes is in `tests/e2e/agent_modes_e2e_test.go`.
+
 ## Configurable Parameters
 
 The SDK does not inject any opinions. All behavior is explicitly configured by the caller.
@@ -80,12 +102,12 @@ The SDK does not inject any opinions. All behavior is explicitly configured by t
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `Type` | Provider type (`"claude"`, `"openai"`) | **required** (no default) |
+| `Type` | Provider type (`"claude"`, `"openai"`) | `"claude"` when empty |
 | `BaseURL` | API base URL | **required** |
 | `APIKey` | API key | **required** |
 | `Model` | Model identifier | **required** |
 | `MaxTokens` | Max response tokens | 4096 |
-| `TimeoutSeconds` | Request timeout | 1800 (30min) |
+| `TimeoutSeconds` | Request timeout | 300 (5min) |
 | `MaxAttempts` | Retry count | 5 |
 
 ### API Agent (`agent.APIAgentOptions`)
@@ -188,6 +210,62 @@ orchReq := orchestrator.OrchestratorRequest{
 ```
 
 More specific directory instructions override broader root-level guidance.
+
+Skill metadata is appended to the same repository instruction block automatically (progressive disclosure format).
+
+## Skills (Claude Code Equivalent)
+
+Built-in skill tools are registered by default in `builtin.NewRegistryWithBuiltins()`:
+
+- `list_skills`: discover metadata only (name/description/path)
+- `read_skill`: read full `SKILL.md` by name or path
+- `use_skill`: resolve + render skill for execution (`$ARGUMENTS`, `${CLAUDE_SESSION_ID}`)
+
+Slash-style user invocation is supported on the first user message:
+
+- Input format: `/<skill-name> <arguments>`
+- The orchestrator resolves the skill, renders `SKILL.md`, and rewrites the first user message with rendered instructions
+- Unknown slash commands are ignored (treated as normal text)
+
+Skill front matter fields:
+
+- `name`
+- `description`
+- `invocation`
+- `user-invocable` (default `true`)
+- `disable-model-invocation` (default `false`)
+- `allowed-tools` (comma list or YAML list)
+
+Skill precedence for duplicate names:
+
+- Scope precedence: `project > personal > system > unknown`
+- Within same scope, later-discovered directories win
+
+Default skill search directories:
+
+- Project layers from repo root to workdir: `.agents/skills`, `.codex/skills`
+- Personal: `~/.agents/skills`, `~/.codex/skills`, `~/.codex/superpowers/skills`, `~/.claude/skills`
+- System: `/etc/codex/skills`
+
+Skill-related environment variables:
+
+- `SKILL_DIRS`: overrides default discovery roots (path-list format)
+- `SYSTEM_SKILL_DIRS`: appends extra system-level skill roots
+- `ACTIVE_SKILL_NAME`: active skill name in tool context
+- `ACTIVE_SKILL_PATH`: active skill file path in tool context
+- `ACTIVE_SKILL_ALLOWED_TOOLS`: active allowed-tools policy in tool context
+- `CLAUDE_SESSION_ID`: optional template variable for skill rendering
+
+When an active skill has `allowed-tools`, the orchestrator blocks tool calls not matched by policy. `use_skill` remains callable to allow skill switching.
+
+## OpenAI-Compatible Tool-Call Handling
+
+Some OpenAI-compatible gateways return:
+
+- `choices[0].finish_reason = "stop"`
+- while still including `choices[0].message.tool_calls`
+
+`OpenAIProvider` treats this as tool-use (`stop_reason=tool_use`) whenever `tool_calls` are present, so tool execution is not skipped.
 
 ## Optional GitHub/Webhook Extensions
 

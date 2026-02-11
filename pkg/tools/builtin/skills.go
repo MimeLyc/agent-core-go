@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -271,6 +272,14 @@ func (t UseSkillTool) Execute(ctx context.Context, toolCtx *tools.ToolContext, i
 	}
 
 	args, _ := input["arguments"].(string)
+	log.Printf(
+		"[skills-tool] use_skill resolved: source=%s skill=%s scope=%s path=%s args=%q",
+		source,
+		selected.Name,
+		selected.Scope,
+		filepath.ToSlash(selected.Path),
+		strings.TrimSpace(args),
+	)
 	sessionID := strings.TrimSpace(toolCtx.Env[skills.EnvClaudeSessionID])
 	rendered, truncated, err := skills.RenderForInvocation(selected, args, sessionID, skills.DefaultSkillReadMaxBytes)
 	if err != nil {

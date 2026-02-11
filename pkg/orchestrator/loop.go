@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -505,7 +507,12 @@ func truncatedSuffix(truncated bool) string {
 func buildSkillMetadata(workDir string) (content string, count int, truncated bool) {
 	searchDirs := skills.DefaultSearchDirs(workDir)
 	discovered, err := skills.Discover(searchDirs)
-	if err != nil || len(discovered) == 0 {
+	if err != nil {
+		log.Printf("[orchestrator] failed to discover skills for workdir=%s: %v", workDir, err)
+		return "", 0, false
+	}
+	logSkillDiscoveryByDir(searchDirs, discovered)
+	if len(discovered) == 0 {
 		return "", 0, false
 	}
 	block := skills.BuildPromptBlock(discovered, skills.DefaultPromptBlockMaxBytes)
@@ -540,6 +547,13 @@ func applySlashSkillInvocation(state *State, toolCtx *tools.ToolContext, workDir
 	if !selected.UserInvocable {
 		return false, fmt.Errorf("skill %q has user-invocable=false", selected.Name)
 	}
+	log.Printf(
+		"[orchestrator] slash-skill invocation resolved: skill=%s scope=%s path=%s args=%q",
+		selected.Name,
+		selected.Scope,
+		filepath.ToSlash(selected.Path),
+		strings.TrimSpace(arguments),
+	)
 
 	sessionID := ""
 	if toolCtx != nil && toolCtx.Env != nil {
@@ -573,6 +587,130 @@ func applySlashSkillInvocation(state *State, toolCtx *tools.ToolContext, workDir
 	}
 
 	return true, nil
+}
+
+const unmatchedSkillDirLabel = "<unmatched>"
+
+type skillDiscoveryLogEntry struct {
+	Dir    string
+	Skills []skills.Skill
+}
+
+func logSkillDiscoveryByDir(searchDirs []string, discovered []skills.Skill) {
+	entries := summarizeSkillDiscoveryByDir(searchDirs, discovered)
+	if len(entries) == 0 {
+		log.Printf("[orchestrator] skill discovery paths: none")
+		return
+	}
+
+	for _, entry := range entries {
+		log.Printf(
+			"[orchestrator] skills loaded from %s: count=%d list=%s",
+			filepath.ToSlash(entry.Dir),
+			len(entry.Skills),
+			formatSkillListForLog(entry.Skills),
+		)
+	}
+}
+
+func summarizeSkillDiscoveryByDir(searchDirs []string, discovered []skills.Skill) []skillDiscoveryLogEntry {
+	dirs := uniqueNonEmptyPaths(searchDirs)
+	if len(dirs) == 0 && len(discovered) == 0 {
+		return nil
+	}
+
+	grouped := make(map[string][]skills.Skill, len(dirs)+1)
+	for _, dir := range dirs {
+		grouped[dir] = nil
+	}
+
+	for _, skill := range discovered {
+		matched := false
+		for _, dir := range dirs {
+			if isPathWithinDir(skill.Path, dir) {
+				grouped[dir] = append(grouped[dir], skill)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			grouped[unmatchedSkillDirLabel] = append(grouped[unmatchedSkillDirLabel], skill)
+		}
+	}
+
+	entries := make([]skillDiscoveryLogEntry, 0, len(dirs)+1)
+	for _, dir := range dirs {
+		entries = append(entries, skillDiscoveryLogEntry{
+			Dir:    dir,
+			Skills: sortSkillsForLog(grouped[dir]),
+		})
+	}
+	if unmatched := sortSkillsForLog(grouped[unmatchedSkillDirLabel]); len(unmatched) > 0 {
+		entries = append(entries, skillDiscoveryLogEntry{
+			Dir:    unmatchedSkillDirLabel,
+			Skills: unmatched,
+		})
+	}
+	return entries
+}
+
+func uniqueNonEmptyPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+func isPathWithinDir(path, dir string) bool {
+	path = strings.TrimSpace(path)
+	dir = strings.TrimSpace(dir)
+	if path == "" || dir == "" {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	cleanDir := filepath.Clean(dir)
+	rel, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func sortSkillsForLog(in []skills.Skill) []skills.Skill {
+	out := append([]skills.Skill(nil), in...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name == out[j].Name {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func formatSkillListForLog(skillList []skills.Skill) string {
+	if len(skillList) == 0 {
+		return "[]"
+	}
+	items := make([]string, 0, len(skillList))
+	for _, skill := range skillList {
+		items = append(items, fmt.Sprintf("%s(%s)", skill.Name, filepath.ToSlash(skill.Path)))
+	}
+	return "[" + strings.Join(items, ", ") + "]"
 }
 
 func ensureToolAllowedByActiveSkill(toolCtx *tools.ToolContext, toolName string) error {
