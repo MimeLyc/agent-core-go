@@ -1,0 +1,1 @@
+/Users/yocha/workspace/pingcap/ai_proj/agent-core-go/AGENTS.md

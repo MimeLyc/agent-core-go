@@ -326,6 +326,99 @@ func TestOpenAIProviderToolCalls(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderToolCallsWithStopFinishReason(t *testing.T) {
+	// Some OpenAI-compatible providers return finish_reason=stop even when tool_calls exist.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":      "resp_05f29ac5928a29dc01698bf0ffe56c8197a963bfbdbfab4829",
+			"object":  "chat.completion",
+			"created": int64(1770778880),
+			"model":   "gpt-5.2-2025-12-11",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":    "assistant",
+						"content": "",
+						"tool_calls": []map[string]any{
+							{
+								"id":   "call_1FGKNEreFHX0dKSGkQ0U6p07",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "ping",
+									"arguments": `{}`,
+								},
+							},
+						},
+						"function_call": nil,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     2605,
+				"completion_tokens": 24,
+				"total_tokens":      2629,
+			},
+			"prompt_tokens_details": map[string]int{
+				"cached_tokens": 0,
+			},
+			"completion_tokens_details": map[string]int{
+				"reasoning_tokens": 8,
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(LLMProviderConfig{
+		Type:           ProviderOpenAI,
+		BaseURL:        server.URL,
+		APIKey:         "test-key",
+		Model:          "gpt-4",
+		TimeoutSeconds: 30,
+	})
+
+	req := AgentRequest{
+		Messages: []Message{
+			NewTextMessage(RoleUser, "Call ping tool"),
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "ping",
+				Description: "test",
+				InputSchema: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+		},
+	}
+
+	resp, err := provider.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+
+	if resp.StopReason != StopReasonToolUse {
+		t.Errorf("resp.StopReason = %v, want tool_use", resp.StopReason)
+	}
+
+	toolUses := resp.GetToolUses()
+	if len(toolUses) != 1 {
+		t.Fatalf("expected 1 tool use, got %d", len(toolUses))
+	}
+	if toolUses[0].Name != "ping" {
+		t.Errorf("tool name = %v, want ping", toolUses[0].Name)
+	}
+	if toolUses[0].ID != "call_1FGKNEreFHX0dKSGkQ0U6p07" {
+		t.Errorf("tool id = %v, want call_1FGKNEreFHX0dKSGkQ0U6p07", toolUses[0].ID)
+	}
+	if len(toolUses[0].Input) != 0 {
+		t.Errorf("tool input = %v, want empty object", toolUses[0].Input)
+	}
+}
+
 func TestAgentRunnerBackwardCompatibility(t *testing.T) {
 	// Create a mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

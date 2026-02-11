@@ -376,11 +376,13 @@ func (p *OpenAIProvider) parseOpenAIResponse(body []byte) (AgentResponse, error)
 	}
 
 	// Add tool calls
+	hasToolCalls := false
 	for _, tc := range msg.ToolCalls {
 		var input map[string]any
 		if tc.Function.Arguments != "" {
 			json.Unmarshal([]byte(tc.Function.Arguments), &input)
 		}
+		hasToolCalls = true
 		content = append(content, ContentBlock{
 			Type:  ContentTypeToolUse,
 			ID:    tc.ID,
@@ -400,6 +402,11 @@ func (p *OpenAIProvider) parseOpenAIResponse(body []byte) (AgentResponse, error)
 		stopReason = StopReasonMaxTokens
 	default:
 		stopReason = StopReasonEndTurn
+	}
+	// Some OpenAI-compatible providers return finish_reason="stop" while still
+	// populating tool_calls. Presence of tool_calls should take precedence.
+	if hasToolCalls {
+		stopReason = StopReasonToolUse
 	}
 
 	return AgentResponse{
