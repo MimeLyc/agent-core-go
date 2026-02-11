@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MimeLyc/agent-core-go/pkg/skills"
 )
 
 func TestReadRepoInstructionsAggregatesRootToLeafAndPrefersAgent(t *testing.T) {
@@ -59,7 +61,7 @@ description: test description
 ---
 `)
 
-	t.Setenv("CODEX_SKILL_DIRS", skillsDir)
+	t.Setenv(skills.SkillDirsEnv, skillsDir)
 	got := readRepoInstructions(repo, nil)
 	if !strings.Contains(got, "Available Skills") {
 		t.Fatalf("expected Available Skills block in instructions, got: %q", got)

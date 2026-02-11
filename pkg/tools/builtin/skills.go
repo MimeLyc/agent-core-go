@@ -186,10 +186,123 @@ func (t ReadSkillTool) Execute(ctx context.Context, toolCtx *tools.ToolContext, 
 	return tools.NewToolResult(b.String()), nil
 }
 
+// UseSkillTool loads and renders a skill for immediate execution.
+// This is the Claude-Code-equivalent atomic invocation path.
+type UseSkillTool struct{}
+
+func (t UseSkillTool) Name() string {
+	return "use_skill"
+}
+
+func (t UseSkillTool) Description() string {
+	return "Invoke a skill by name and return rendered SKILL.md instructions with argument/session substitution."
+}
+
+func (t UseSkillTool) InputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":        "string",
+				"description": "Skill name to invoke",
+			},
+			"arguments": map[string]any{
+				"type":        "string",
+				"description": "Optional arguments passed to the skill ($ARGUMENTS)",
+			},
+			"source": map[string]any{
+				"type":        "string",
+				"description": "Invocation source: model (default) or user",
+			},
+			"search_paths": map[string]any{
+				"type":        "array",
+				"description": "Optional explicit directories to scan for skills",
+				"items":       map[string]any{"type": "string"},
+			},
+		},
+		"required": []string{"name"},
+	}
+}
+
+func (t UseSkillTool) Execute(ctx context.Context, toolCtx *tools.ToolContext, input map[string]any) (tools.ToolResult, error) {
+	if err := toolCtx.CheckFileRead(); err != nil {
+		return tools.NewErrorResult(err), nil
+	}
+
+	name, _ := input["name"].(string)
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return tools.NewErrorResultf("name is required"), nil
+	}
+
+	searchPaths := parseSearchPaths(input["search_paths"])
+	if len(searchPaths) == 0 {
+		searchPaths = skills.DefaultSearchDirs(toolCtx.WorkDir)
+	}
+	discovered, err := skills.Discover(searchPaths)
+	if err != nil {
+		return tools.NewErrorResultf("failed to discover skills: %v", err), nil
+	}
+	if len(discovered) == 0 {
+		return tools.NewErrorResultf("no skills available"), nil
+	}
+
+	selected, err := skills.ResolveForInvocation(discovered, name)
+	if err != nil {
+		return tools.NewErrorResult(err), nil
+	}
+
+	source, _ := input["source"].(string)
+	source = strings.ToLower(strings.TrimSpace(source))
+	if source == "" {
+		source = "model"
+	}
+	switch source {
+	case "model":
+		if selected.DisableModelInvocation {
+			return tools.NewErrorResultf("skill %q has disable-model-invocation=true; model invocation is disabled", selected.Name), nil
+		}
+	case "user":
+		if !selected.UserInvocable {
+			return tools.NewErrorResultf("skill %q has user-invocable=false and cannot be invoked explicitly by user", selected.Name), nil
+		}
+	default:
+		return tools.NewErrorResultf("invalid source %q: must be model or user", source), nil
+	}
+
+	args, _ := input["arguments"].(string)
+	sessionID := strings.TrimSpace(toolCtx.Env[skills.EnvClaudeSessionID])
+	rendered, truncated, err := skills.RenderForInvocation(selected, args, sessionID, skills.DefaultSkillReadMaxBytes)
+	if err != nil {
+		return tools.NewErrorResultf("failed to render skill: %v", err), nil
+	}
+
+	toolCtx.WithEnv(skills.EnvActiveSkillName, selected.Name)
+	toolCtx.WithEnv(skills.EnvActiveSkillPath, selected.Path)
+	if len(selected.AllowedTools) > 0 {
+		toolCtx.WithEnv(skills.EnvActiveSkillAllowedTools, skills.JoinAllowedToolsEnv(selected.AllowedTools))
+	} else if toolCtx.Env != nil {
+		delete(toolCtx.Env, skills.EnvActiveSkillAllowedTools)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Skill: %s\nPath: %s\nSource: %s\n", selected.Name, filepath.ToSlash(selected.Path), source)
+	if len(selected.AllowedTools) > 0 {
+		fmt.Fprintf(&b, "Allowed-Tools: %s\n", strings.Join(selected.AllowedTools, ", "))
+	}
+	b.WriteString("\n")
+	b.WriteString(rendered)
+	if truncated {
+		fmt.Fprintf(&b, "\n\n[truncated to %d bytes]", skills.DefaultSkillReadMaxBytes)
+	}
+	return tools.NewToolResult(strings.TrimSpace(b.String())), nil
+}
+
 // RegisterSkillTools registers skill discovery/read tools.
 func RegisterSkillTools(registry *tools.Registry) {
 	registry.MustRegister(ListSkillsTool{})
 	registry.MustRegister(ReadSkillTool{})
+	registry.MustRegister(UseSkillTool{})
 }
 
 func parseSearchPaths(value any) []string {

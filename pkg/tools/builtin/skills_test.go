@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MimeLyc/agent-core-go/pkg/skills"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -92,6 +93,73 @@ description: second
 	}
 	if !strings.Contains(result.Content, "ambiguous") {
 		t.Fatalf("expected ambiguous error, got: %q", result.Content)
+	}
+}
+
+func TestUseSkillToolBlocksModelInvocationWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, ".agents", "skills")
+	mustWrite(t, filepath.Join(skillsDir, "secret", "SKILL.md"), `---
+name: secret
+description: hidden model skill
+disable-model-invocation: true
+---
+
+# secret
+do secret things`)
+
+	tool := UseSkillTool{}
+	toolCtx := tools.NewToolContext(root)
+	result, err := tool.Execute(context.Background(), toolCtx, map[string]any{
+		"name":         "secret",
+		"source":       "model",
+		"search_paths": []any{skillsDir},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected tool error for disable-model-invocation skill")
+	}
+	if !strings.Contains(strings.ToLower(result.Content), "model invocation") {
+		t.Fatalf("expected model invocation error, got: %q", result.Content)
+	}
+}
+
+func TestUseSkillToolAppliesArgumentsAndSetsActiveSkillContext(t *testing.T) {
+	root := t.TempDir()
+	skillsDir := filepath.Join(root, ".agents", "skills")
+	mustWrite(t, filepath.Join(skillsDir, "deploy", "SKILL.md"), `---
+name: deploy
+description: deploy helper
+allowed-tools: Bash, Read
+---
+
+Deploy target: $ARGUMENTS`)
+
+	tool := UseSkillTool{}
+	toolCtx := tools.NewToolContext(root)
+	toolCtx.WithEnv(skills.EnvClaudeSessionID, "sess-test-1")
+	result, err := tool.Execute(context.Background(), toolCtx, map[string]any{
+		"name":         "deploy",
+		"arguments":    "staging",
+		"source":       "user",
+		"search_paths": []any{skillsDir},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected tool error: %s", result.Content)
+	}
+	if !strings.Contains(result.Content, "Deploy target: staging") {
+		t.Fatalf("expected arguments substitution, got: %q", result.Content)
+	}
+	if got := toolCtx.Env[skills.EnvActiveSkillName]; got != "deploy" {
+		t.Fatalf("expected active skill name deploy, got: %q", got)
+	}
+	if got := toolCtx.Env[skills.EnvActiveSkillAllowedTools]; got == "" {
+		t.Fatalf("expected active skill allowed-tools env to be set")
 	}
 }
 

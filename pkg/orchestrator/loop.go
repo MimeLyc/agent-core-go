@@ -21,6 +21,30 @@ const (
 	defaultMaxMessages   = 50
 )
 
+const defaultSystemPrompt = `You are an autonomous engineering agent.
+
+## Role
+- Deliver correct, minimal, production-ready changes for the user's request.
+- Prefer evidence over assumptions: inspect files, run commands, and verify outcomes.
+
+## Agent Loop
+Follow this loop every task:
+1. Observe: inspect repository state and relevant code first.
+2. Plan: decide the smallest safe change that satisfies the request.
+3. Act: execute edits/tools in small, coherent steps.
+4. Verify: run targeted checks/tests and confirm results.
+5. Report: summarize concrete changes and verification output.
+
+## Tool Discipline
+- Use tools intentionally; do not fabricate command output or file content.
+- Keep paths relative to repository root unless explicitly required otherwise.
+- If blocked by missing data, explain what is missing and stop.
+
+## Skills
+- Skills are authoritative workflow bundles.
+- If a relevant skill exists, invoke it with tool ` + "`use_skill`" + ` before significant work.
+- Follow loaded skill instructions exactly unless they conflict with higher-priority system/user constraints.`
+
 // generateToolUseID generates a unique ID for tool_use blocks that have empty IDs.
 // This is needed because some LLM APIs may return tool_use blocks without IDs,
 // but the API requires matching IDs between tool_use and tool_result.
@@ -116,6 +140,14 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 	repoInstructions := req.RepoInstructions
 	if repoInstructions == "" && req.WorkDir != "" {
 		repoInstructions = readRepoInstructions(req.WorkDir, req.InstructionFiles)
+	}
+
+	// Handle explicit slash-skill invocation from the initial user message.
+	// This mirrors Claude Code's user-triggered "/skill args" behavior.
+	if applied, err := applySlashSkillInvocation(state, toolCtx, req.WorkDir); err != nil {
+		log.Printf("[orchestrator] WARNING: slash skill invocation failed: %v", err)
+	} else if applied {
+		log.Printf("[orchestrator] applied explicit slash skill invocation")
 	}
 
 	// Build tool definitions from registry
@@ -321,6 +353,21 @@ func (l *AgentLoop) executeTools(
 	for _, use := range uses {
 		log.Printf("[orchestrator] calling tool: %s id=%s input=%v", use.Name, use.ID, use.Input)
 
+		if err := ensureToolAllowedByActiveSkill(toolCtx, use.Name); err != nil {
+			log.Printf("[orchestrator] skill-allowlist blocked tool %s: %v", use.Name, err)
+			result := tools.NewErrorResult(err)
+			results = append(results, toolExecResult{
+				ID:     use.ID,
+				Name:   use.Name,
+				Input:  use.Input,
+				Result: result,
+			})
+			if req.OnToolResult != nil {
+				req.OnToolResult(use.Name, result)
+			}
+			continue
+		}
+
 		// Notify callback
 		if req.OnToolCall != nil {
 			req.OnToolCall(use.Name, use.Input)
@@ -389,9 +436,10 @@ func buildSystemPrompt(base, repoInstructions string) string {
 	parts := []string{}
 
 	base = strings.TrimSpace(base)
-	if base != "" {
-		parts = append(parts, base)
+	if base == "" {
+		base = defaultSystemPrompt
 	}
+	parts = append(parts, base)
 
 	repoInstructions = strings.TrimSpace(repoInstructions)
 	if repoInstructions != "" {
@@ -462,6 +510,99 @@ func buildSkillMetadata(workDir string) (content string, count int, truncated bo
 	}
 	block := skills.BuildPromptBlock(discovered, skills.DefaultPromptBlockMaxBytes)
 	return block.Content, block.SkillCount, block.Truncated
+}
+
+func applySlashSkillInvocation(state *State, toolCtx *tools.ToolContext, workDir string) (bool, error) {
+	if state == nil || len(state.Messages) == 0 {
+		return false, nil
+	}
+	initial := state.Messages[0]
+	if initial.Role != llm.RoleUser {
+		return false, nil
+	}
+	name, arguments, ok := skills.ParseSlashSkillCommand(initial.GetText())
+	if !ok {
+		return false, nil
+	}
+
+	discovered, err := skills.Discover(skills.DefaultSearchDirs(workDir))
+	if err != nil {
+		return false, err
+	}
+	if len(discovered) == 0 {
+		return false, nil
+	}
+	selected, err := skills.ResolveForInvocation(discovered, name)
+	if err != nil {
+		// Unknown slash command is not an error; leave message unchanged.
+		return false, nil
+	}
+	if !selected.UserInvocable {
+		return false, fmt.Errorf("skill %q has user-invocable=false", selected.Name)
+	}
+
+	sessionID := ""
+	if toolCtx != nil && toolCtx.Env != nil {
+		sessionID = strings.TrimSpace(toolCtx.Env[skills.EnvClaudeSessionID])
+	}
+	rendered, truncated, err := skills.RenderForInvocation(selected, arguments, sessionID, skills.DefaultSkillReadMaxBytes)
+	if err != nil {
+		return false, err
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "User invoked /%s\n", name)
+	if strings.TrimSpace(arguments) != "" {
+		fmt.Fprintf(&b, "Arguments: %s\n", strings.TrimSpace(arguments))
+	}
+	b.WriteString("\n")
+	b.WriteString(rendered)
+	if truncated {
+		fmt.Fprintf(&b, "\n\n[truncated to %d bytes]", skills.DefaultSkillReadMaxBytes)
+	}
+	state.Messages[0] = llm.NewTextMessage(llm.RoleUser, strings.TrimSpace(b.String()))
+
+	if toolCtx != nil {
+		toolCtx.WithEnv(skills.EnvActiveSkillName, selected.Name)
+		toolCtx.WithEnv(skills.EnvActiveSkillPath, selected.Path)
+		if len(selected.AllowedTools) > 0 {
+			toolCtx.WithEnv(skills.EnvActiveSkillAllowedTools, skills.JoinAllowedToolsEnv(selected.AllowedTools))
+		} else if toolCtx.Env != nil {
+			delete(toolCtx.Env, skills.EnvActiveSkillAllowedTools)
+		}
+	}
+
+	return true, nil
+}
+
+func ensureToolAllowedByActiveSkill(toolCtx *tools.ToolContext, toolName string) error {
+	if toolCtx == nil || toolCtx.Env == nil {
+		return nil
+	}
+	// Allow reloading/switching skills even under a restrictive skill allowlist.
+	if toolName == "use_skill" {
+		return nil
+	}
+
+	allowedRaw := strings.TrimSpace(toolCtx.Env[skills.EnvActiveSkillAllowedTools])
+	if allowedRaw == "" {
+		return nil
+	}
+	allowed := skills.ParseAllowedToolsEnv(allowedRaw)
+	if skills.IsToolAllowed(toolName, allowed) {
+		return nil
+	}
+
+	skillName := strings.TrimSpace(toolCtx.Env[skills.EnvActiveSkillName])
+	if skillName == "" {
+		skillName = "active skill"
+	}
+	return fmt.Errorf(
+		"tool %q is blocked by skill %q allowed-tools policy (%s)",
+		toolName,
+		skillName,
+		strings.Join(allowed, ", "),
+	)
 }
 
 // truncateMessages truncates message history while preserving tool_use/tool_result pairs.
