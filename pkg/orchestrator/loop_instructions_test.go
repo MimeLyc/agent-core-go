@@ -42,7 +42,7 @@ func TestReadRepoInstructionsAggregatesRootToLeafAndPrefersAgent(t *testing.T) {
 }
 
 func TestBuildSystemPromptIncludesLayerPrecedenceHint(t *testing.T) {
-	prompt := buildSystemPrompt("", "## AGENT.md\nrules")
+	prompt := buildSystemPrompt("", "", "## AGENT.md\nrules")
 	if !strings.Contains(prompt, "More specific instructions should override broader ones.") {
 		t.Fatalf("expected precedence guidance in system prompt, got: %q", prompt)
 	}
@@ -68,6 +68,47 @@ description: test description
 	}
 	if !strings.Contains(got, "test-skill") {
 		t.Fatalf("expected discovered skill metadata, got: %q", got)
+	}
+}
+
+func TestBuildSystemPromptIncludesSoulBeforeRepoInstructions(t *testing.T) {
+	prompt := buildSystemPrompt("base", "Be a pirate.", "## AGENT.md\nrules")
+	if !strings.Contains(prompt, "## Soul") {
+		t.Fatalf("expected Soul section in prompt, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Be a pirate.") {
+		t.Fatalf("expected soul content in prompt, got: %q", prompt)
+	}
+	soulPos := strings.Index(prompt, "## Soul")
+	repoPos := strings.Index(prompt, "## Repository Instructions")
+	if soulPos >= repoPos {
+		t.Fatalf("expected Soul before Repository Instructions, soul=%d repo=%d", soulPos, repoPos)
+	}
+}
+
+func TestBuildSystemPromptNoSoul(t *testing.T) {
+	prompt := buildSystemPrompt("base", "", "repo stuff")
+	if strings.Contains(prompt, "Soul") {
+		t.Fatalf("expected no Soul section when content is empty, got: %q", prompt)
+	}
+}
+
+func TestReadSoulContentFromWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteText(t, filepath.Join(dir, "SOUL.md"), "You are helpful.")
+	content := readSoulContent(dir, "")
+	if content != "You are helpful." {
+		t.Fatalf("expected soul content, got: %q", content)
+	}
+}
+
+func TestReadSoulContentExplicitFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "custom.md")
+	mustWriteText(t, path, "Custom soul.")
+	content := readSoulContent("", path)
+	if content != "Custom soul." {
+		t.Fatalf("expected custom soul content, got: %q", content)
 	}
 }
 

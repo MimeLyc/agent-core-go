@@ -50,6 +50,7 @@ Standardize entry points so contributors don’t need to memorize tool-specific 
 - If the current directory is a git repo, always check the latest commit and working tree changes to judge progress (e.g., `git log -1`, `git show -1`, `git status`, `git diff`).
 - If you decide a change requires updating `README.md`, make the `README.md` updates in English.
 - When you need library/API documentation, code generation patterns, or setup/configuration steps, use Context7 MCP first (do not wait for the user to explicitly ask).
+- For underlying logic changes to existing features, do not alter external behavior or protocols. If an external change is unavoidable, explicitly call out the impact and require approval before proceeding.
 
 # Requirement Rules
 

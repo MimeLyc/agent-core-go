@@ -48,6 +48,11 @@ type OrchestratorRequest struct {
 	// When enabled, long conversations are summarized instead of truncated.
 	CompactConfig CompactConfig
 
+	// SoulFile is an explicit path to the SOUL.md file.
+	// If empty, the orchestrator searches for SOUL.md in WorkDir then repo root.
+	// Set to a non-existent path to disable SOUL loading entirely.
+	SoulFile string
+
 	// WorkDir is the working directory for tool execution.
 	WorkDir string
 

@@ -15,6 +15,7 @@ import (
 	"github.com/MimeLyc/agent-core-go/pkg/instructions"
 	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/skills"
+	"github.com/MimeLyc/agent-core-go/pkg/soul"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -144,6 +145,9 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 		repoInstructions = readRepoInstructions(req.WorkDir, req.InstructionFiles)
 	}
 
+	// Load SOUL file
+	soulContent := readSoulContent(req.WorkDir, req.SoulFile)
+
 	// Handle explicit slash-skill invocation from the initial user message.
 	// This mirrors Claude Code's user-triggered "/skill args" behavior.
 	if applied, err := applySlashSkillInvocation(state, toolCtx, req.WorkDir); err != nil {
@@ -168,7 +172,7 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 		req.WorkDir, toolNames, req.MaxIterations)
 
 	// Build system prompt
-	systemPrompt := buildSystemPrompt(req.SystemPrompt, repoInstructions)
+	systemPrompt := buildSystemPrompt(req.SystemPrompt, soulContent, repoInstructions)
 	log.Printf("[orchestrator] system prompt length: %d chars", len(systemPrompt))
 
 	// Set max iterations
@@ -433,8 +437,8 @@ func buildToolResultMessage(results []toolExecResult) llm.Message {
 	}
 }
 
-// buildSystemPrompt combines the base system prompt with repo instructions.
-func buildSystemPrompt(base, repoInstructions string) string {
+// buildSystemPrompt combines the base system prompt with SOUL and repo instructions.
+func buildSystemPrompt(base, soulContent, repoInstructions string) string {
 	parts := []string{}
 
 	base = strings.TrimSpace(base)
@@ -442,6 +446,18 @@ func buildSystemPrompt(base, repoInstructions string) string {
 		base = defaultSystemPrompt
 	}
 	parts = append(parts, base)
+
+	soulContent = strings.TrimSpace(soulContent)
+	if soulContent != "" {
+		parts = append(parts, strings.Join([]string{
+			"## Soul",
+			"",
+			"The following defines your character, personality, and behavioral directives.",
+			"Follow these directives throughout the conversation.",
+			"",
+			soulContent,
+		}, "\n"))
+	}
 
 	repoInstructions = strings.TrimSpace(repoInstructions)
 	if repoInstructions != "" {
@@ -455,6 +471,21 @@ func buildSystemPrompt(base, repoInstructions string) string {
 		}, "\n"))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// readSoulContent loads the SOUL file content.
+func readSoulContent(workDir, soulFile string) string {
+	opts := soul.LoadOptions{
+		File: soulFile,
+	}
+	result := soul.Load(workDir, opts)
+
+	if result.Content != "" {
+		log.Printf("[orchestrator] loaded SOUL from %s (%d bytes)%s",
+			result.Source, len(result.Content), truncatedSuffix(result.Truncated))
+	}
+
+	return result.Content
 }
 
 // readRepoInstructions loads repository instructions from repo root to workDir.
