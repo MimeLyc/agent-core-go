@@ -18,6 +18,10 @@ type AgentRequest struct {
 	// RepoInstructions contains repository instruction content.
 	RepoInstructions string
 
+	// SoulFile is the path to a SOUL.md file that defines the agent's character.
+	// If empty, searches for SOUL.md in WorkDir then repo root.
+	SoulFile string
+
 	// WorkDir is the working directory for tool execution.
 	WorkDir string
 

@@ -85,6 +85,7 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	orchReq := orchestrator.OrchestratorRequest{
 		SystemPrompt:     req.SystemPrompt,
 		RepoInstructions: req.RepoInstructions,
+		SoulFile:         req.SoulFile,
 		InitialMessages: []llm.Message{
 			llm.NewTextMessage(llm.RoleUser, req.Task),
 		},
