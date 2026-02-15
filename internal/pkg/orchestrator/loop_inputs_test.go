@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 

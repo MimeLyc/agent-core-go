@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools/builtin"
 )
 
@@ -18,26 +18,26 @@ func main() {
 		return
 	}
 
-	provider, err := llm.NewLLMProvider(llm.LLMProviderConfig{
-		Type:           llm.ProviderOpenAI,
-		BaseURL:        "https://api.openai.com",
-		APIKey:         apiKey,
-		Model:          "gpt-4.1",
-		MaxTokens:      1024,
-		TimeoutSeconds: 120,
-		MaxAttempts:    3,
+	a, err := agent.NewAgent(agent.AgentConfig{
+		Type: agent.AgentTypeAPI,
+		API: &agent.APIConfig{
+			ProviderType:  agent.ProviderTypeOpenAI,
+			BaseURL:       "https://api.openai.com",
+			APIKey:        apiKey,
+			Model:         "gpt-4.1",
+			MaxTokens:     1024,
+			Timeout:       120 * time.Second,
+			MaxAttempts:   3,
+			MaxIterations: 8,
+			MaxMessages:   30,
+			SystemPrompt:  "You are a helpful assistant. Analyze the repository and respond with a brief summary.",
+		},
+		Registry: builtin.NewRegistryWithBuiltins(),
 	})
 	if err != nil {
 		panic(err)
 	}
-
-	registry := builtin.NewRegistryWithBuiltins()
-	a := agent.NewAPIAgent(provider, registry, agent.APIAgentOptions{
-		MaxIterations: 8,
-		MaxMessages:   30,
-		MaxTokens:     1024,
-		SystemPrompt:  "You are a helpful assistant. Analyze the repository and respond with a brief summary.",
-	})
+	defer a.Close()
 
 	result, err := a.Execute(context.Background(), agent.AgentRequest{
 		Task:    "List the files in the current directory and return a short JSON response with a summary of what you found.",
@@ -47,6 +47,5 @@ func main() {
 		panic(err)
 	}
 
-	fmt.Printf("Decision: %s\n", result.Decision)
 	fmt.Printf("Summary: %s\n", result.Summary)
 }

@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
+	agenttypes "github.com/MimeLyc/agent-core-go/pkg/agent/types"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -162,6 +163,25 @@ func (apiAgentStreamingProvider) Stream(_ context.Context, _ llm.AgentRequest, o
 	}, nil
 }
 
+type apiAgentPipelineProvider struct {
+	lastReq llm.AgentRequest
+}
+
+func (p *apiAgentPipelineProvider) Name() string {
+	return "api-agent-pipeline-provider"
+}
+
+func (p *apiAgentPipelineProvider) Call(_ context.Context, req llm.AgentRequest) (llm.AgentResponse, error) {
+	p.lastReq = req
+	return llm.AgentResponse{
+		Role:       llm.RoleAssistant,
+		StopReason: llm.StopReasonEndTurn,
+		Content: []llm.ContentBlock{
+			{Type: llm.ContentTypeText, Text: "ok"},
+		},
+	}, nil
+}
+
 func TestAPIAgentExecuteStreamEmitsDeltaEvents(t *testing.T) {
 	a := NewAPIAgent(apiAgentStreamingProvider{}, tools.NewRegistry(), APIAgentOptions{
 		EnableStreaming: true,
@@ -200,5 +220,52 @@ func TestAPIAgentExecuteStreamEmitsDeltaEvents(t *testing.T) {
 	}
 	if deltaText != "hello" {
 		t.Fatalf("expected merged delta text hello, got %q", deltaText)
+	}
+}
+
+func TestAPIAgentExecuteAppliesTransformAndConvertHooks(t *testing.T) {
+	provider := &apiAgentPipelineProvider{}
+	a := NewAPIAgent(provider, tools.NewRegistry(), APIAgentOptions{})
+
+	transformCalled := false
+	convertCalled := false
+	_, err := a.Execute(context.Background(), AgentRequest{
+		Task: "pipeline",
+		Options: AgentOptions{
+			TransformContext: func(_ context.Context, messages []agenttypes.Message) ([]agenttypes.Message, error) {
+				transformCalled = true
+				return append(messages, agenttypes.NewTextMessage(agenttypes.RoleUser, "transform marker")), nil
+			},
+			ConvertToLlm: func(_ context.Context, messages []agenttypes.Message, _ string) ([]agenttypes.LLMMessage, error) {
+				convertCalled = true
+				found := false
+				for _, m := range messages {
+					if m.GetText() == "transform marker" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("convert hook ran before transform output")
+				}
+				return []agenttypes.Message{agenttypes.NewTextMessage(agenttypes.RoleUser, "converted")}, nil
+			},
+			DisableDefaultContextRules: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !transformCalled {
+		t.Fatalf("expected transform hook to run")
+	}
+	if !convertCalled {
+		t.Fatalf("expected convert hook to run")
+	}
+	if len(provider.lastReq.Messages) != 1 {
+		t.Fatalf("provider message count = %d, want 1", len(provider.lastReq.Messages))
+	}
+	if got := provider.lastReq.Messages[0].GetText(); got != "converted" {
+		t.Fatalf("provider first message text = %q, want %q", got, "converted")
 	}
 }

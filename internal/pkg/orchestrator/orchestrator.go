@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -12,6 +12,13 @@ type Orchestrator interface {
 	// Run executes the agent loop and returns the final result.
 	Run(ctx context.Context, req OrchestratorRequest) (OrchestratorResult, error)
 }
+
+// AgentMessage is the message model used inside the transformContext stage.
+// It can be transformed before provider-specific conversion.
+type AgentMessage = llm.Message
+
+// LLMMessage is the canonical message model sent to providers.
+type LLMMessage = llm.Message
 
 // OrchestratorRequest contains all inputs for an orchestrator run.
 type OrchestratorRequest struct {
@@ -28,7 +35,7 @@ type OrchestratorRequest struct {
 	InstructionFiles []string
 
 	// InitialMessages are the starting messages for the conversation.
-	InitialMessages []llm.Message
+	InitialMessages []AgentMessage
 
 	// Tools are the local tools available to the agent.
 	Tools []tools.Tool
@@ -71,6 +78,17 @@ type OrchestratorRequest struct {
 	GetSteeringMessages LoopInputFetcher
 	GetFollowUpMessages LoopInputFetcher
 
+	// TransformContext is an optional pre-processing hook applied before default
+	// context rules and provider conversion.
+	TransformContext TransformContextHook
+
+	// ConvertToLlm is an optional conversion hook applied after context rules.
+	// It can adapt messages based on provider capabilities/protocol needs.
+	ConvertToLlm ConvertToLlmHook
+
+	// DisableDefaultContextRules disables built-in compaction/truncation/validation rules.
+	DisableDefaultContextRules bool
+
 	// Callbacks for monitoring the agent loop.
 	OnMessage         func(llm.Message)
 	OnToolCall        func(name string, input map[string]any)
@@ -90,6 +108,12 @@ type LoopInputSnapshot struct {
 
 // LoopInputFetcher loads runtime loop input messages.
 type LoopInputFetcher func(ctx context.Context, snapshot LoopInputSnapshot) ([]llm.Message, error)
+
+// TransformContextHook transforms conversation messages before the model call.
+type TransformContextHook func(ctx context.Context, messages []AgentMessage) ([]AgentMessage, error)
+
+// ConvertToLlmHook converts messages for the selected provider.
+type ConvertToLlmHook func(ctx context.Context, messages []AgentMessage, providerName string) ([]LLMMessage, error)
 
 // MCPServerConfig configures an MCP server connection.
 type MCPServerConfig struct {

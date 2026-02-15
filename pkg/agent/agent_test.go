@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
+	agenttypes "github.com/MimeLyc/agent-core-go/pkg/agent/types"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -78,14 +79,7 @@ func TestAPIAgentCapabilitiesDefaultContextTokens(t *testing.T) {
 
 func TestRunnerAdapterConversion(t *testing.T) {
 	req := llm.Request{
-		Mode:         "task",
-		RepoFullName: "owner/repo",
-		TaskID:       "task-123",
-		TaskTitle:    "Test task",
-		TaskBody:     "Task body",
-		TaskComments: []llm.Comment{
-			{User: "user1", Body: "Comment 1"},
-		},
+		Prompt: "User input text",
 	}
 
 	agentReq := convertLLMRequest(req, "/tmp/workdir", "system prompt")
@@ -93,25 +87,26 @@ func TestRunnerAdapterConversion(t *testing.T) {
 	if agentReq.WorkDir != "/tmp/workdir" {
 		t.Errorf("expected workdir /tmp/workdir, got %s", agentReq.WorkDir)
 	}
-	if agentReq.Context.RepoFullName != "owner/repo" {
-		t.Errorf("expected repo owner/repo, got %s", agentReq.Context.RepoFullName)
+	if agentReq.Task != "User input text" {
+		t.Errorf("expected task 'User input text', got %q", agentReq.Task)
 	}
-	if agentReq.Context.TaskID != "task-123" {
-		t.Errorf("expected task id task-123, got %s", agentReq.Context.TaskID)
+}
+
+func TestRunnerAdapterConversionFallbacksToLegacyFields(t *testing.T) {
+	req := llm.Request{
+		TaskBody: "Legacy body",
 	}
-	if agentReq.Context.TaskTitle != "Test task" {
-		t.Errorf("expected task title Test task, got %s", agentReq.Context.TaskTitle)
-	}
-	if len(agentReq.Context.TaskComments) != 1 {
-		t.Errorf("expected 1 comment, got %d", len(agentReq.Context.TaskComments))
+
+	agentReq := convertLLMRequest(req, "/tmp/workdir", "system prompt")
+	if agentReq.Task != "Legacy body" {
+		t.Fatalf("expected task from legacy body, got %q", agentReq.Task)
 	}
 }
 
 func TestConvertToRunResult(t *testing.T) {
 	result := AgentResult{
-		Success:  true,
-		Decision: DecisionProceed,
-		Summary:  "Test summary",
+		Success: true,
+		Summary: "Test summary",
 		FileChanges: []FileChange{
 			{Path: "file.go", Content: "package main", Operation: FileOpModify},
 		},
@@ -220,7 +215,7 @@ func TestAgentCallbacks(t *testing.T) {
 	var messageCalled, toolCallCalled, toolResultCalled bool
 
 	callbacks := AgentCallbacks{
-		OnMessage: func(msg llm.Message) {
+		OnMessage: func(msg agenttypes.Message) {
 			messageCalled = true
 		},
 		OnToolCall: func(name string, input map[string]any) {
@@ -232,7 +227,7 @@ func TestAgentCallbacks(t *testing.T) {
 	}
 
 	// Simulate callbacks
-	callbacks.OnMessage(llm.Message{})
+	callbacks.OnMessage(agenttypes.Message{})
 	callbacks.OnToolCall("test", nil)
 	callbacks.OnToolResult("test", tools.ToolResult{})
 

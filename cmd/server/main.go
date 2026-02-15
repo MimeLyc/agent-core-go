@@ -13,7 +13,6 @@ import (
 
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
 	"github.com/MimeLyc/agent-core-go/pkg/controller"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools/builtin"
 )
 
@@ -68,7 +67,7 @@ func main() {
 
 type serverConfig struct {
 	// LLM
-	providerType   llm.LLMProviderType
+	providerType   agent.ProviderType
 	baseURL        string
 	apiKey         string
 	model          string
@@ -95,7 +94,7 @@ type serverConfig struct {
 
 func loadConfig() serverConfig {
 	return serverConfig{
-		providerType:      llm.LLMProviderType(envOrDefault("LLM_PROVIDER_TYPE", "openai")),
+		providerType:      agent.ProviderType(envOrDefault("LLM_PROVIDER_TYPE", "openai")),
 		baseURL:           envOrDefault("LLM_BASE_URL", "https://api.openai.com"),
 		apiKey:            os.Getenv("LLM_API_KEY"),
 		model:             envOrDefault("LLM_MODEL", "gpt-4.1"),

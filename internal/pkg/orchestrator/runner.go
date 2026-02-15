@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -45,15 +44,11 @@ func NewOrchestratorRunner(orch Orchestrator, registry *tools.Registry) *Orchest
 
 // Run implements the llm.Runner interface.
 func (r *OrchestratorRunner) Run(ctx context.Context, req llm.Request, workDir string) (llm.RunResult, error) {
-	log.Printf("[runner] starting orchestrator run: mode=%s repo=%s workdir=%s",
-		req.Mode, req.RepoFullName, workDir)
+	log.Printf("[runner] starting orchestrator run: mode=%s workdir=%s",
+		req.Mode, workDir)
 
-	// Build initial message from request
-	userPrompt := req.Prompt
-	if userPrompt == "" {
-		// Build prompt from request fields
-		userPrompt = buildPromptFromRequest(req)
-	}
+	// Build initial message from request.
+	userPrompt := buildPromptFromRequest(req)
 	log.Printf("[runner] user prompt length: %d chars", len(userPrompt))
 
 	// Create orchestrator request
@@ -104,98 +99,36 @@ func (r *OrchestratorRunner) Run(ctx context.Context, req llm.Request, workDir s
 	}, nil
 }
 
-// buildPromptFromRequest creates a user prompt from the llm.Request fields.
+// buildPromptFromRequest creates a user task prompt from llm.Request.
+// Prompt is preferred. Legacy fields are used only as compatibility fallback.
 func buildPromptFromRequest(req llm.Request) string {
+	if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
+		return prompt
+	}
+
 	var parts []string
-
-	parts = append(parts, fmt.Sprintf("Mode: %s", req.Mode))
-	parts = append(parts, fmt.Sprintf("Repository: %s", req.RepoFullName))
-
-	taskID := req.TaskID
-	if taskID == "" {
-		switch {
-		case req.IssueNumber > 0:
-			taskID = fmt.Sprintf("issue-%d", req.IssueNumber)
-		case req.PRNumber > 0:
-			taskID = fmt.Sprintf("pr-%d", req.PRNumber)
-		}
-	}
-	taskTitle := firstNonEmptyRequest(req.TaskTitle, req.IssueTitle, req.PRTitle)
-	taskBody := firstNonEmptyRequest(req.TaskBody, req.IssueBody, req.PRBody)
-	taskLabels := req.TaskLabels
-	if len(taskLabels) == 0 {
-		taskLabels = req.IssueLabels
-	}
-	taskComments := req.TaskComments
-	if len(taskComments) == 0 {
-		taskComments = req.IssueComments
+	title := firstNonEmptyRequest(req.TaskTitle, req.IssueTitle, req.PRTitle)
+	if strings.TrimSpace(title) != "" {
+		parts = append(parts, fmt.Sprintf("Title: %s", strings.TrimSpace(title)))
 	}
 
-	if taskID != "" || taskTitle != "" || taskBody != "" || len(taskLabels) > 0 || len(taskComments) > 0 || req.PRHeadRef != "" || req.PRBaseRef != "" {
-		parts = append(parts, "\n## Task Context")
-		if taskID != "" {
-			parts = append(parts, fmt.Sprintf("Task ID: %s", taskID))
-		}
-		if taskTitle != "" {
-			parts = append(parts, fmt.Sprintf("Title: %s", taskTitle))
-		}
-		if taskBody != "" {
-			parts = append(parts, fmt.Sprintf("Body:\n%s", taskBody))
-		}
-		if len(taskLabels) > 0 {
-			parts = append(parts, fmt.Sprintf("Labels: %s", strings.Join(taskLabels, ", ")))
-		}
-		if req.PRHeadRef != "" {
-			parts = append(parts, fmt.Sprintf("Source Branch: %s", req.PRHeadRef))
-		}
-		if req.PRBaseRef != "" {
-			parts = append(parts, fmt.Sprintf("Target Branch: %s", req.PRBaseRef))
-		}
-		if len(taskComments) > 0 {
-			parts = append(parts, "\n### Comments:")
-			for _, c := range taskComments {
-				parts = append(parts, fmt.Sprintf("@%s: %s", c.User, c.Body))
-			}
-		}
+	body := firstNonEmptyRequest(req.TaskBody, req.IssueBody, req.PRBody)
+	if strings.TrimSpace(body) != "" {
+		parts = append(parts, strings.TrimSpace(body))
 	}
 
-	if req.CommentBody != "" {
-		parts = append(parts, fmt.Sprintf("\n## Trigger Input\n%s", req.CommentBody))
+	if strings.TrimSpace(req.CommentBody) != "" {
+		parts = append(parts, strings.TrimSpace(req.CommentBody))
 	}
 
-	if req.SlashCommand != "" {
-		parts = append(parts, fmt.Sprintf("\nTrigger Command: %s", req.SlashCommand))
+	if strings.TrimSpace(req.Requirements) != "" {
+		parts = append(parts, fmt.Sprintf("Requirements:\n%s", strings.TrimSpace(req.Requirements)))
 	}
 
-	if req.Requirements != "" {
-		parts = append(parts, fmt.Sprintf("\n## Requirements\n%s", req.Requirements))
+	if len(parts) == 0 {
+		return "Please process the user request."
 	}
-
-	if len(req.Metadata) > 0 {
-		parts = append(parts, "\n## Metadata")
-		keys := make([]string, 0, len(req.Metadata))
-		for k := range req.Metadata {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			parts = append(parts, fmt.Sprintf("- %s: %s", key, req.Metadata[key]))
-		}
-	}
-
-	parts = append(parts, "\n## Instructions")
-	parts = append(parts, "Analyze the context and make the necessary code changes.")
-	parts = append(parts, "Use the available tools to read files, make changes, and run commands.")
-	parts = append(parts, "When complete, output a JSON object with the following fields:")
-	parts = append(parts, "- decision: 'proceed' (changes ready), 'needs_info' (need more info), or 'stop' (cannot automate)")
-	parts = append(parts, "- needs_info_comment: explanation if decision is needs_info")
-	parts = append(parts, "- commit_message: commit message for changes")
-	parts = append(parts, "- pr_title: title for the proposed code change (legacy field name)")
-	parts = append(parts, "- pr_body: body for the proposed code change (legacy field name)")
-	parts = append(parts, "- files: map of file paths to their complete new content")
-	parts = append(parts, "- summary: summary of what was done")
-
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n\n")
 }
 
 func firstNonEmptyRequest(values ...string) string {

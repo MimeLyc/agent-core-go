@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"testing"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 )
 
 func TestTruncateMessagesPreservesToolPairs(t *testing.T) {

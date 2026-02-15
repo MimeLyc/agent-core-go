@@ -50,9 +50,6 @@ type CLIResponse struct {
 	// Success indicates if the execution completed.
 	Success bool
 
-	// Decision is the agent's decision.
-	Decision string
-
 	// Summary is a brief description.
 	Summary string
 
@@ -180,10 +177,9 @@ func (a *CLIAgent) ExecuteStream(ctx context.Context, req AgentRequest) (<-chan 
 			errCh <- ctx.Err()
 			return
 		case eventCh <- AgentStreamEvent{
-			Type:     AgentEventAgentEnd,
-			Decision: result.Decision,
-			Message:  result.Message,
-			Usage:    &usage,
+			Type:    AgentEventAgentEnd,
+			Message: result.Message,
+			Usage:   &usage,
 		}:
 		}
 	}()
@@ -210,21 +206,8 @@ func (a *CLIAgent) Close() error {
 
 // convertCLIResponse converts a CLIResponse to an AgentResult.
 func convertCLIResponse(resp CLIResponse) AgentResult {
-	var decision Decision
-	switch resp.Decision {
-	case "proceed":
-		decision = DecisionProceed
-	case "needs_info":
-		decision = DecisionNeedsInfo
-	case "stop":
-		decision = DecisionStop
-	default:
-		decision = DecisionProceed
-	}
-
 	return AgentResult{
 		Success:     resp.Success,
-		Decision:    decision,
 		Summary:     resp.Summary,
 		Message:     resp.Message,
 		FileChanges: resp.FileChanges,
@@ -366,20 +349,18 @@ func (c *ClaudeCodeClient) parseTextOutput(text string) (CLIResponse, error) {
 
 	// No JSON found, return as summary
 	return CLIResponse{
-		Success:  true,
-		Decision: "proceed",
-		Summary:  text,
-		Message:  text,
+		Success: true,
+		Summary: text,
+		Message: text,
 	}, nil
 }
 
 // parseResultContent parses the result content.
 func (c *ClaudeCodeClient) parseResultContent(content string) (CLIResponse, error) {
 	return CLIResponse{
-		Success:  true,
-		Decision: "proceed",
-		Summary:  content,
-		Message:  content,
+		Success: true,
+		Summary: content,
+		Message: content,
 	}, nil
 }
 

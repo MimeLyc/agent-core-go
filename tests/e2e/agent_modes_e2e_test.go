@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 )
 
 func TestE2EAgentModeAPIClaude(t *testing.T) {
@@ -53,7 +53,7 @@ func TestE2EAgentModeAPIClaude(t *testing.T) {
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeAPI,
 		API: &agent.APIConfig{
-			ProviderType: llm.ProviderClaude,
+			ProviderType: agent.ProviderTypeClaude,
 			BaseURL:      server.URL,
 			APIKey:       "test-key",
 			Model:        "claude-test",
@@ -74,9 +74,6 @@ func TestE2EAgentModeAPIClaude(t *testing.T) {
 		t.Fatalf("Execute(api/claude) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionProceed {
-		t.Fatalf("expected decision proceed, got %s", result.Decision)
-	}
 	if result.Summary == "" {
 		t.Fatalf("expected non-empty summary")
 	}
@@ -123,7 +120,7 @@ func TestE2EAgentModeAPIOpenAI(t *testing.T) {
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeAPI,
 		API: &agent.APIConfig{
-			ProviderType: llm.ProviderOpenAI,
+			ProviderType: agent.ProviderTypeOpenAI,
 			BaseURL:      server.URL,
 			APIKey:       "test-key",
 			Model:        "gpt-test",
@@ -144,9 +141,6 @@ func TestE2EAgentModeAPIOpenAI(t *testing.T) {
 		t.Fatalf("Execute(api/openai) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionProceed {
-		t.Fatalf("expected decision proceed, got %s", result.Decision)
-	}
 	if result.Summary == "" {
 		t.Fatalf("expected non-empty summary")
 	}
@@ -177,8 +171,8 @@ func TestE2EAgentModeCLI(t *testing.T) {
 		t.Fatalf("Execute(cli) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionProceed {
-		t.Fatalf("expected decision proceed, got %s", result.Decision)
+	if result.Message == "" {
+		t.Fatalf("expected non-empty message")
 	}
 }
 
@@ -207,8 +201,8 @@ func TestE2EAgentModeClaudeCodeAlias(t *testing.T) {
 		t.Fatalf("Execute(claude-code alias) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionProceed {
-		t.Fatalf("expected decision proceed, got %s", result.Decision)
+	if result.Message == "" {
+		t.Fatalf("expected non-empty message")
 	}
 }
 
@@ -249,7 +243,7 @@ func TestE2EAgentModeAutoPrefersAPI(t *testing.T) {
 	a, err := agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeAuto,
 		API: &agent.APIConfig{
-			ProviderType: llm.ProviderOpenAI,
+			ProviderType: agent.ProviderTypeOpenAI,
 			BaseURL:      server.URL,
 			APIKey:       "test-key",
 			Model:        "gpt-test",
@@ -303,8 +297,8 @@ func TestE2EAgentModeAutoFallsBackToCLI(t *testing.T) {
 		t.Fatalf("Execute(auto/cli) error: %v", err)
 	}
 
-	if result.Decision != agent.DecisionProceed {
-		t.Fatalf("expected decision proceed, got %s", result.Decision)
+	if result.Message == "" {
+		t.Fatalf("expected non-empty message")
 	}
 }
 

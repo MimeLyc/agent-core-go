@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 )
 
 // RunnerAdapter adapts an Agent to implement the llm.Runner interface.
@@ -28,8 +29,8 @@ func NewRunnerAdapter(agent Agent, systemPrompt string) *RunnerAdapter {
 
 // Run implements the llm.Runner interface.
 func (a *RunnerAdapter) Run(ctx context.Context, req llm.Request, workDir string) (llm.RunResult, error) {
-	log.Printf("[runner-adapter] starting run: mode=%s repo=%s workdir=%s",
-		req.Mode, req.RepoFullName, workDir)
+	log.Printf("[runner-adapter] starting run: mode=%s workdir=%s",
+		req.Mode, workDir)
 
 	// Convert llm.Request to AgentRequest
 	agentReq := convertLLMRequest(req, workDir, a.SystemPrompt)
@@ -43,69 +44,47 @@ func (a *RunnerAdapter) Run(ctx context.Context, req llm.Request, workDir string
 
 	// Convert AgentResult to llm.RunResult
 	runResult := convertToRunResult(result)
-	log.Printf("[runner-adapter] run complete: decision=%s files=%d",
-		runResult.Response.Decision, len(runResult.Response.Files))
+	log.Printf("[runner-adapter] run complete: files=%d",
+		len(runResult.Response.Files))
 
 	return runResult, nil
 }
 
 // convertLLMRequest converts an llm.Request to an AgentRequest.
+// AgentRequest only keeps a single user input task text.
 func convertLLMRequest(req llm.Request, workDir, systemPrompt string) AgentRequest {
-	// Convert comments
-	var comments []TaskComment
-	for _, c := range req.TaskComments {
-		comments = append(comments, TaskComment{
-			User: c.User,
-			Body: c.Body,
-		})
+	task := strings.TrimSpace(req.Prompt)
+	if task == "" {
+		task = strings.TrimSpace(firstNonEmpty(req.TaskBody, req.IssueBody, req.PRBody, req.CommentBody))
 	}
-	if len(comments) == 0 {
-		for _, c := range req.IssueComments {
-			comments = append(comments, TaskComment{
-				User: c.User,
-				Body: c.Body,
-			})
-		}
+	if task == "" {
+		task = strings.TrimSpace(firstNonEmpty(req.TaskTitle, req.IssueTitle, req.PRTitle))
+	}
+	if task == "" {
+		task = "Please process the user request."
 	}
 
 	agentReq := AgentRequest{
-		Task:             req.Prompt,
+		Task:             task,
 		SystemPrompt:     systemPrompt,
 		RepoInstructions: req.RepoInstructions,
 		WorkDir:          workDir,
-		Context: AgentContext{
-			RepoFullName: req.RepoFullName,
-			RepoPath:     req.RepoPath,
-			TaskID:       req.TaskID,
-			TaskTitle:    req.TaskTitle,
-			TaskBody:     req.TaskBody,
-			TaskLabels:   req.TaskLabels,
-			TaskComments: comments,
-			Metadata:     req.Metadata,
-			CommentBody:  req.CommentBody,
-			SlashCommand: req.SlashCommand,
-			Requirements: req.Requirements,
-		},
 	}
 
 	return agentReq
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // convertToRunResult converts an AgentResult to an llm.RunResult.
 func convertToRunResult(result AgentResult) llm.RunResult {
-	// Map decision
-	var decision llm.Decision
-	switch result.Decision {
-	case DecisionProceed:
-		decision = llm.DecisionProceed
-	case DecisionNeedsInfo:
-		decision = llm.DecisionNeedsInfo
-	case DecisionStop:
-		decision = llm.DecisionStop
-	default:
-		decision = llm.DecisionProceed
-	}
-
 	// Convert file changes to map
 	files := make(map[string]string)
 	for _, fc := range result.FileChanges {
@@ -114,7 +93,9 @@ func convertToRunResult(result AgentResult) llm.RunResult {
 
 	return llm.RunResult{
 		Response: llm.Response{
-			Decision: decision,
+			// Internal legacy runner contract still requires decision.
+			// Public agent APIs no longer expose decision semantics.
+			Decision: llm.DecisionProceed,
 			Files:    files,
 			Summary:  result.Summary,
 		},

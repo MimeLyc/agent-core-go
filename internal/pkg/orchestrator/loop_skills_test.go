@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/skills"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )

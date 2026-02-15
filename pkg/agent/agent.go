@@ -44,7 +44,6 @@ type AgentStreamEvent struct {
 	Message  string          `json:"message,omitempty"`
 	ToolName string          `json:"tool_name,omitempty"`
 	IsError  bool            `json:"is_error,omitempty"`
-	Decision Decision        `json:"decision,omitempty"`
 	Usage    *ExecutionUsage `json:"usage,omitempty"`
 }
 

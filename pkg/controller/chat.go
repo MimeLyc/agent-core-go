@@ -31,9 +31,8 @@ type ChatRequest struct {
 
 // ChatResponse is the JSON response from POST /api/chat.
 type ChatResponse struct {
-	Reply    string    `json:"reply"`
-	Decision string    `json:"decision"`
-	Usage    UsageInfo `json:"usage"`
+	Reply string    `json:"reply"`
+	Usage UsageInfo `json:"usage"`
 }
 
 // UsageInfo mirrors token/iteration stats.
@@ -95,8 +94,7 @@ func (c *ChatController) HandleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := ChatResponse{
-		Reply:    result.Message,
-		Decision: string(result.Decision),
+		Reply: result.Message,
 		Usage: UsageInfo{
 			Iterations:   result.Usage.TotalIterations,
 			InputTokens:  result.Usage.TotalInputTokens,

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/instructions"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/skills"
 	"github.com/MimeLyc/agent-core-go/pkg/soul"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
@@ -188,44 +188,29 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 			log.Printf("[orchestrator] === iteration %d/unbounded ===", state.Iterations)
 		}
 
-		// Handle message history management
-		messages := state.Messages
+		transformPlugins := buildTransformPlugins(req, state, compactor, maxMessages)
+		contextMessages, err := runTransformPlugins(ctx, state.Messages, transformPlugins)
+		if err != nil {
+			return state.ToResult(), fmt.Errorf("transform context failed: %w", err)
+		}
 
-		// Try compaction if enabled and messages exceed threshold
-		if compactor != nil && compactor.ShouldCompact(messages) {
-			log.Printf("[orchestrator] triggering compaction: %d messages exceed threshold %d",
-				len(messages), req.CompactConfig.Threshold)
-			compactedMessages, err := compactor.Compact(ctx, messages)
+		// Convert agent-context messages into provider-ready LLM messages.
+		llmMessages := defaultConvertToLlm(contextMessages)
+		if req.ConvertToLlm != nil {
+			converted, err := req.ConvertToLlm(ctx, contextMessages, l.Provider.Name())
 			if err != nil {
-				log.Printf("[orchestrator] WARNING: compaction failed: %v, falling back to truncation", err)
-			} else {
-				messages = compactedMessages
-				// Update state with compacted messages
-				state.Messages = messages
-				log.Printf("[orchestrator] compaction succeeded: reduced to %d messages", len(messages))
+				return state.ToResult(), fmt.Errorf("convert to llm failed: %w", err)
 			}
-		}
-
-		// Fall back to truncation if still too long
-		if len(messages) > maxMessages {
-			messages = truncateMessages(messages, maxMessages)
-		}
-
-		// Validate messages before sending - check for orphaned tool_results
-		if err := validateToolPairs(messages); err != nil {
-			log.Printf("[orchestrator] ERROR: message validation failed: %v", err)
-			// Try to recover by not truncating
-			messages = state.Messages
-			log.Printf("[orchestrator] falling back to full message history: %d messages", len(messages))
+			llmMessages = converted
 		}
 
 		// Build request
 		agentReq := llm.AgentRequest{
 			System:   systemPrompt,
-			Messages: messages,
+			Messages: llmMessages,
 			Tools:    toolDefs,
 		}
-		log.Printf("[orchestrator] sending request: messages=%d tools=%d", len(messages), len(toolDefs))
+		log.Printf("[orchestrator] sending request: messages=%d tools=%d", len(llmMessages), len(toolDefs))
 
 		// Call the agent
 		resp, err := l.callProvider(ctx, agentReq, req.EnableStreaming, req.OnStreamDelta)

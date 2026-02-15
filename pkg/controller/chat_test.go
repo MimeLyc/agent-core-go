@@ -50,9 +50,8 @@ func (s *stubAgent) Close() error { return nil }
 func TestHandleChat_Success(t *testing.T) {
 	stub := &stubAgent{
 		result: agent.AgentResult{
-			Success:  true,
-			Decision: agent.DecisionProceed,
-			Message:  "Hello back!",
+			Success: true,
+			Message: "Hello back!",
 			Usage: agent.ExecutionUsage{
 				TotalIterations:   2,
 				TotalInputTokens:  100,
@@ -77,15 +76,21 @@ func TestHandleChat_Success(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	payload := w.Body.Bytes()
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("failed to decode raw response: %v", err)
+	}
+	if _, ok := raw["decision"]; ok {
+		t.Fatalf("did not expect decision in response JSON: %v", raw)
+	}
+
 	var resp ChatResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+	if err := json.Unmarshal(payload, &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 	if resp.Reply != "Hello back!" {
 		t.Errorf("expected reply 'Hello back!', got %q", resp.Reply)
-	}
-	if resp.Decision != "proceed" {
-		t.Errorf("expected decision 'proceed', got %q", resp.Decision)
 	}
 	if resp.Usage.Iterations != 2 {
 		t.Errorf("expected 2 iterations, got %d", resp.Usage.Iterations)
@@ -132,7 +137,7 @@ func TestHandleChat_InvalidJSON(t *testing.T) {
 
 func TestHandleChat_CustomWorkDir(t *testing.T) {
 	stub := &stubAgent{
-		result: agent.AgentResult{Decision: agent.DecisionProceed},
+		result: agent.AgentResult{},
 	}
 	ctrl := NewChatController(stub, ChatConfig{DefaultDir: "/default"})
 
