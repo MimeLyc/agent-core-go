@@ -50,8 +50,9 @@ type ContentBlock struct {
 
 // Message is the public message model for agent callbacks/results.
 type Message struct {
-	Role    MessageRole    `json:"role"`
-	Content []ContentBlock `json:"content"`
+	Role             MessageRole    `json:"role"`
+	Content          []ContentBlock `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
 }
 
 // LLMMessage is the provider-facing message model after convertToLlm.

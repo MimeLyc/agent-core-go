@@ -458,8 +458,9 @@ func fromLLMMessage(msg llm.Message) agenttypes.Message {
 		content = append(content, fromLLMContentBlock(block))
 	}
 	return agenttypes.Message{
-		Role:    fromLLMRole(msg.Role),
-		Content: content,
+		Role:             fromLLMRole(msg.Role),
+		Content:          content,
+		ReasoningContent: msg.ReasoningContent,
 	}
 }
 
@@ -469,8 +470,9 @@ func toLLMMessage(msg agenttypes.Message) llm.Message {
 		content = append(content, toLLMContentBlock(block))
 	}
 	return llm.Message{
-		Role:    toLLMRole(msg.Role),
-		Content: content,
+		Role:             toLLMRole(msg.Role),
+		Content:          content,
+		ReasoningContent: msg.ReasoningContent,
 	}
 }
 

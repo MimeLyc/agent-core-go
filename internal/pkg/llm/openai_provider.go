@@ -253,10 +253,11 @@ type openaiRequest struct {
 }
 
 type openaiMessage struct {
-	Role       string           `json:"role"`
-	Content    any              `json:"content"` // string or []openaiContentPart
-	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role             string           `json:"role"`
+	Content          any              `json:"content"` // string or []openaiContentPart
+	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string           `json:"tool_call_id,omitempty"`
+	ReasoningContent any              `json:"reasoning_content,omitempty"`
 }
 
 type openaiContentPart struct {
@@ -459,6 +460,9 @@ func (p *OpenAIProvider) convertMessage(msg Message) []openaiMessage {
 		if len(toolCalls) > 0 {
 			assistantMsg.ToolCalls = toolCalls
 		}
+		if msg.ReasoningContent != "" {
+			assistantMsg.ReasoningContent = msg.ReasoningContent
+		}
 		result = append(result, assistantMsg)
 	}
 
@@ -482,6 +486,7 @@ func (p *OpenAIProvider) parseOpenAIResponse(body []byte) (AgentResponse, error)
 
 	choice := openaiResp.Choices[0]
 	msg := choice.Message
+	reasoningContent := normalizeReasoningContent(msg.ReasoningContent)
 
 	// Convert to Claude format
 	var content []ContentBlock
@@ -529,17 +534,33 @@ func (p *OpenAIProvider) parseOpenAIResponse(body []byte) (AgentResponse, error)
 	}
 
 	return AgentResponse{
-		ID:         openaiResp.ID,
-		Type:       "message",
-		Role:       RoleAssistant,
-		Content:    content,
-		Model:      openaiResp.Model,
-		StopReason: stopReason,
+		ID:               openaiResp.ID,
+		Type:             "message",
+		Role:             RoleAssistant,
+		Content:          content,
+		ReasoningContent: reasoningContent,
+		Model:            openaiResp.Model,
+		StopReason:       stopReason,
 		Usage: Usage{
 			InputTokens:  openaiResp.Usage.PromptTokens,
 			OutputTokens: openaiResp.Usage.CompletionTokens,
 		},
 	}, nil
+}
+
+func normalizeReasoningContent(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprintf("%v", typed))
+		}
+		return strings.TrimSpace(string(encoded))
+	}
 }
 
 func (p *OpenAIProvider) doRequest(ctx context.Context, client *http.Client, payload []byte) ([]byte, int, error) {

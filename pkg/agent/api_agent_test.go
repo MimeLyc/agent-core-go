@@ -269,3 +269,23 @@ func TestAPIAgentExecuteAppliesTransformAndConvertHooks(t *testing.T) {
 		t.Fatalf("provider first message text = %q, want %q", got, "converted")
 	}
 }
+
+func TestMessageConversionPreservesReasoningContent(t *testing.T) {
+	original := llm.Message{
+		Role:             llm.RoleAssistant,
+		ReasoningContent: "chain of thought summary",
+		Content: []llm.ContentBlock{
+			{Type: llm.ContentTypeText, Text: "ok"},
+		},
+	}
+
+	public := fromLLMMessage(original)
+	if public.ReasoningContent != "chain of thought summary" {
+		t.Fatalf("fromLLMMessage reasoning_content = %q, want %q", public.ReasoningContent, "chain of thought summary")
+	}
+
+	roundTrip := toLLMMessage(public)
+	if roundTrip.ReasoningContent != "chain of thought summary" {
+		t.Fatalf("toLLMMessage reasoning_content = %q, want %q", roundTrip.ReasoningContent, "chain of thought summary")
+	}
+}
