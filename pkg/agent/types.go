@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"time"
 
 	"github.com/MimeLyc/agent-core-go/pkg/llm"
@@ -70,6 +71,13 @@ type AgentOptions struct {
 	// MaxIterations limits the number of agent loop iterations.
 	MaxIterations int
 
+	// DisableIterationLimit removes the loop iteration cap for this request.
+	// This takes precedence over MaxIterations when true.
+	DisableIterationLimit bool
+
+	// EnableStreaming turns on incremental model output when supported.
+	EnableStreaming bool
+
 	// MaxTokens limits the response token count.
 	MaxTokens int
 
@@ -85,6 +93,13 @@ type AgentOptions struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// GetSteeringMessages fetches high-priority runtime messages that can steer
+	// the next model turn immediately.
+	GetSteeringMessages LoopInputFetcher
+
+	// GetFollowUpMessages fetches runtime follow-up messages appended after steering.
+	GetFollowUpMessages LoopInputFetcher
 }
 
 // CompactConfig configures context compaction (summarization).
@@ -110,9 +125,29 @@ type AgentCallbacks struct {
 	// OnToolResult is called when a tool returns a result.
 	OnToolResult func(name string, result tools.ToolResult)
 
+	// OnSteeringApplied is called when steering messages are injected.
+	OnSteeringApplied func(messages []llm.Message)
+
+	// OnFollowUpApplied is called when follow-up messages are injected.
+	OnFollowUpApplied func(messages []llm.Message)
+
+	// OnStreamDelta is called for incremental model text output.
+	OnStreamDelta func(delta llm.ContentBlockDelta)
+
 	// OnIteration is called at the start of each iteration.
 	OnIteration func(iteration int)
 }
+
+// LoopInputSnapshot describes the current loop state for runtime input providers.
+type LoopInputSnapshot struct {
+	Iteration      int
+	MessageCount   int
+	ToolCallCount  int
+	LastStopReason llm.StopReason
+}
+
+// LoopInputFetcher fetches runtime steering/follow-up messages.
+type LoopInputFetcher func(ctx context.Context, snapshot LoopInputSnapshot) ([]llm.Message, error)
 
 // Decision indicates how the workflow should proceed.
 type Decision string

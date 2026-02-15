@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
@@ -13,9 +14,11 @@ import (
 
 // stubAgent implements agent.Agent for testing.
 type stubAgent struct {
-	result agent.AgentResult
-	err    error
-	lastReq agent.AgentRequest
+	result    agent.AgentResult
+	err       error
+	lastReq   agent.AgentRequest
+	stream    []agent.AgentStreamEvent
+	streamErr error
 }
 
 func (s *stubAgent) Execute(_ context.Context, req agent.AgentRequest) (agent.AgentResult, error) {
@@ -25,6 +28,21 @@ func (s *stubAgent) Execute(_ context.Context, req agent.AgentRequest) (agent.Ag
 
 func (s *stubAgent) Capabilities() agent.AgentCapabilities {
 	return agent.AgentCapabilities{}
+}
+
+func (s *stubAgent) ExecuteStream(_ context.Context, req agent.AgentRequest) (<-chan agent.AgentStreamEvent, <-chan error) {
+	s.lastReq = req
+	eventCh := make(chan agent.AgentStreamEvent, len(s.stream))
+	errCh := make(chan error, 1)
+	for _, evt := range s.stream {
+		eventCh <- evt
+	}
+	close(eventCh)
+	if s.streamErr != nil {
+		errCh <- s.streamErr
+	}
+	close(errCh)
+	return eventCh, errCh
 }
 
 func (s *stubAgent) Close() error { return nil }
@@ -156,5 +174,34 @@ func TestHandleHealth(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleChatStream_Success(t *testing.T) {
+	stub := &stubAgent{
+		stream: []agent.AgentStreamEvent{
+			{Type: agent.AgentEventAgentStart},
+			{Type: agent.AgentEventMessageDelta, Delta: "Hel"},
+			{Type: agent.AgentEventMessageDelta, Delta: "lo"},
+			{Type: agent.AgentEventAgentEnd},
+		},
+	}
+	ctrl := NewChatController(stub, ChatConfig{
+		DefaultDir:      "/tmp",
+		EnableStreaming: true,
+	})
+
+	body := `{"message":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/stream", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	ctrl.HandleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "event: message_delta") {
+		t.Fatalf("expected SSE stream output, got %q", w.Body.String())
 	}
 }

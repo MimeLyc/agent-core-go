@@ -37,7 +37,12 @@ type OrchestratorRequest struct {
 	MCPServers []MCPServerConfig
 
 	// MaxIterations limits the number of agent loop iterations.
+	// Non-positive values mean no iteration cap.
 	MaxIterations int
+
+	// DisableIterationLimit forces the loop to run without an iteration cap.
+	// This takes precedence over MaxIterations when true.
+	DisableIterationLimit bool
 
 	// MaxMessages limits the conversation history size to avoid API limits.
 	// When exceeded, older messages (except the first) are truncated.
@@ -47,6 +52,9 @@ type OrchestratorRequest struct {
 	// CompactConfig configures context compaction (summarization).
 	// When enabled, long conversations are summarized instead of truncated.
 	CompactConfig CompactConfig
+
+	// EnableStreaming turns on provider streaming if supported.
+	EnableStreaming bool
 
 	// SoulFile is an explicit path to the SOUL.md file.
 	// If empty, the orchestrator searches for SOUL.md in WorkDir then repo root.
@@ -59,11 +67,29 @@ type OrchestratorRequest struct {
 	// ToolContext provides execution context for tools.
 	ToolContext *tools.ToolContext
 
+	// Runtime loop input providers. These are polled at key checkpoints.
+	GetSteeringMessages LoopInputFetcher
+	GetFollowUpMessages LoopInputFetcher
+
 	// Callbacks for monitoring the agent loop.
-	OnMessage    func(llm.Message)
-	OnToolCall   func(name string, input map[string]any)
-	OnToolResult func(name string, result tools.ToolResult)
+	OnMessage         func(llm.Message)
+	OnToolCall        func(name string, input map[string]any)
+	OnToolResult      func(name string, result tools.ToolResult)
+	OnSteeringApplied func(messages []llm.Message)
+	OnFollowUpApplied func(messages []llm.Message)
+	OnStreamDelta     func(delta llm.ContentBlockDelta)
 }
+
+// LoopInputSnapshot provides loop state to steering/follow-up providers.
+type LoopInputSnapshot struct {
+	Iteration      int
+	MessageCount   int
+	ToolCallCount  int
+	LastStopReason llm.StopReason
+}
+
+// LoopInputFetcher loads runtime loop input messages.
+type LoopInputFetcher func(ctx context.Context, snapshot LoopInputSnapshot) ([]llm.Message, error)
 
 // MCPServerConfig configures an MCP server connection.
 type MCPServerConfig struct {

@@ -11,11 +11,41 @@ type Agent interface {
 	// Execute runs the agent with the given request and returns the result.
 	Execute(ctx context.Context, req AgentRequest) (AgentResult, error)
 
+	// ExecuteStream runs the agent and emits structured stream events.
+	// Implementations may fall back to coarse-grained events if token streaming
+	// is not supported by the underlying provider.
+	ExecuteStream(ctx context.Context, req AgentRequest) (<-chan AgentStreamEvent, <-chan error)
+
 	// Capabilities returns the agent's capabilities.
 	Capabilities() AgentCapabilities
 
 	// Close releases any resources held by the agent.
 	Close() error
+}
+
+// AgentEventType identifies stream event categories.
+type AgentEventType string
+
+const (
+	AgentEventAgentStart      AgentEventType = "agent_start"
+	AgentEventMessageDelta    AgentEventType = "message_delta"
+	AgentEventMessageEnd      AgentEventType = "message_end"
+	AgentEventToolCall        AgentEventType = "tool_call"
+	AgentEventToolResult      AgentEventType = "tool_result"
+	AgentEventSteeringApplied AgentEventType = "steering_applied"
+	AgentEventFollowUpApplied AgentEventType = "followup_applied"
+	AgentEventAgentEnd        AgentEventType = "agent_end"
+)
+
+// AgentStreamEvent is a structured streaming event emitted during execution.
+type AgentStreamEvent struct {
+	Type     AgentEventType  `json:"type"`
+	Delta    string          `json:"delta,omitempty"`
+	Message  string          `json:"message,omitempty"`
+	ToolName string          `json:"tool_name,omitempty"`
+	IsError  bool            `json:"is_error,omitempty"`
+	Decision Decision        `json:"decision,omitempty"`
+	Usage    *ExecutionUsage `json:"usage,omitempty"`
 }
 
 // AgentCapabilities describes what an agent can do.

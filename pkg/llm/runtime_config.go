@@ -13,7 +13,7 @@ const (
 	DefaultAPIKeyPrefix    = "Bearer"
 	DefaultAPIMaxAttempts  = 5
 	DefaultTimeout         = 30 * time.Minute
-	DefaultAgentIterations = 50
+	DefaultAgentIterations = 0
 	DefaultAgentMessages   = 40
 	DefaultAgentMaxTokens  = 4096
 	DefaultCompactThresh   = 30

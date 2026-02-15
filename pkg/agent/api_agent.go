@@ -29,6 +29,7 @@ type APIAgent struct {
 // APIAgentOptions configures the APIAgent.
 type APIAgentOptions struct {
 	// MaxIterations limits agent loop iterations.
+	// Non-positive values mean no iteration cap.
 	MaxIterations int
 
 	// MaxMessages limits conversation history size.
@@ -45,6 +46,9 @@ type APIAgentOptions struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// EnableStreaming enables stream-mode execution paths.
+	EnableStreaming bool
 }
 
 // NewAPIAgent creates a new APIAgent.
@@ -56,10 +60,7 @@ func NewAPIAgent(provider llm.LLMProvider, registry *tools.Registry, opts APIAge
 	}
 	loop := orchestrator.NewAgentLoop(provider, registry)
 
-	// Set defaults
-	if opts.MaxIterations <= 0 {
-		opts.MaxIterations = 50
-	}
+	// Set defaults. Non-positive MaxIterations means unbounded.
 	if opts.MaxMessages <= 0 {
 		opts.MaxMessages = 50
 	}
@@ -81,23 +82,33 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	log.Printf("[api-agent] starting execution: workdir=%s task_length=%d",
 		req.WorkDir, len(req.Task))
 
+	systemPrompt := req.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = a.options.SystemPrompt
+	}
+
 	// Convert AgentRequest to OrchestratorRequest
 	orchReq := orchestrator.OrchestratorRequest{
-		SystemPrompt:     req.SystemPrompt,
+		SystemPrompt:     systemPrompt,
 		RepoInstructions: req.RepoInstructions,
 		SoulFile:         req.SoulFile,
 		InitialMessages: []llm.Message{
 			llm.NewTextMessage(llm.RoleUser, req.Task),
 		},
-		MaxIterations: a.options.MaxIterations,
-		MaxMessages:   a.options.MaxMessages,
-		WorkDir:       req.WorkDir,
-		ToolContext:   tools.NewToolContext(req.WorkDir),
+		MaxIterations:         a.options.MaxIterations,
+		MaxMessages:           a.options.MaxMessages,
+		WorkDir:               req.WorkDir,
+		ToolContext:           tools.NewToolContext(req.WorkDir),
+		EnableStreaming:       a.options.EnableStreaming || req.Options.EnableStreaming,
+		DisableIterationLimit: req.Options.DisableIterationLimit,
 	}
 
 	// Apply request options
 	if req.Options.MaxIterations > 0 {
 		orchReq.MaxIterations = req.Options.MaxIterations
+	}
+	if req.Options.DisableIterationLimit {
+		orchReq.MaxIterations = 0
 	}
 	if req.Options.CompactConfig != nil {
 		orchReq.CompactConfig = orchestrator.CompactConfig{
@@ -123,6 +134,35 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	if req.Callbacks.OnToolResult != nil {
 		orchReq.OnToolResult = req.Callbacks.OnToolResult
 	}
+	if req.Callbacks.OnSteeringApplied != nil {
+		orchReq.OnSteeringApplied = req.Callbacks.OnSteeringApplied
+	}
+	if req.Callbacks.OnFollowUpApplied != nil {
+		orchReq.OnFollowUpApplied = req.Callbacks.OnFollowUpApplied
+	}
+	if req.Callbacks.OnStreamDelta != nil {
+		orchReq.OnStreamDelta = req.Callbacks.OnStreamDelta
+	}
+	if req.Options.GetSteeringMessages != nil {
+		orchReq.GetSteeringMessages = func(ctx context.Context, snapshot orchestrator.LoopInputSnapshot) ([]llm.Message, error) {
+			return req.Options.GetSteeringMessages(ctx, LoopInputSnapshot{
+				Iteration:      snapshot.Iteration,
+				MessageCount:   snapshot.MessageCount,
+				ToolCallCount:  snapshot.ToolCallCount,
+				LastStopReason: snapshot.LastStopReason,
+			})
+		}
+	}
+	if req.Options.GetFollowUpMessages != nil {
+		orchReq.GetFollowUpMessages = func(ctx context.Context, snapshot orchestrator.LoopInputSnapshot) ([]llm.Message, error) {
+			return req.Options.GetFollowUpMessages(ctx, LoopInputSnapshot{
+				Iteration:      snapshot.Iteration,
+				MessageCount:   snapshot.MessageCount,
+				ToolCallCount:  snapshot.ToolCallCount,
+				LastStopReason: snapshot.LastStopReason,
+			})
+		}
+	}
 
 	// Run the orchestrator
 	orchResult, err := a.loop.Run(ctx, orchReq)
@@ -142,6 +182,125 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	return result, nil
 }
 
+// ExecuteStream runs the agent and emits structured stream events.
+func (a *APIAgent) ExecuteStream(
+	ctx context.Context, req AgentRequest) (<-chan AgentStreamEvent, <-chan error) {
+	eventCh := make(chan AgentStreamEvent, 128)
+	errCh := make(chan error, 1)
+
+	if !a.options.EnableStreaming && !req.Options.EnableStreaming {
+		close(eventCh)
+		errCh <- fmt.Errorf("streaming is disabled by configuration")
+		close(errCh)
+		return eventCh, errCh
+	}
+
+	go func() {
+		defer close(eventCh)
+		defer close(errCh)
+
+		emit := func(evt AgentStreamEvent) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case eventCh <- evt:
+				return true
+			}
+		}
+
+		if !emit(AgentStreamEvent{Type: AgentEventAgentStart}) {
+			return
+		}
+
+		streamReq := req
+		streamReq.Options.EnableStreaming = true
+		cbs := streamReq.Callbacks
+
+		prevMessage := cbs.OnMessage
+		cbs.OnMessage = func(msg llm.Message) {
+			if prevMessage != nil {
+				prevMessage(msg)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:    AgentEventMessageEnd,
+				Message: msg.GetText(),
+			})
+		}
+
+		prevToolCall := cbs.OnToolCall
+		cbs.OnToolCall = func(name string, input map[string]any) {
+			if prevToolCall != nil {
+				prevToolCall(name, input)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:     AgentEventToolCall,
+				ToolName: name,
+			})
+		}
+
+		prevToolResult := cbs.OnToolResult
+		cbs.OnToolResult = func(name string, result tools.ToolResult) {
+			if prevToolResult != nil {
+				prevToolResult(name, result)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:     AgentEventToolResult,
+				ToolName: name,
+				Message:  result.Content,
+				IsError:  result.IsError,
+			})
+		}
+
+		prevSteering := cbs.OnSteeringApplied
+		cbs.OnSteeringApplied = func(messages []llm.Message) {
+			if prevSteering != nil {
+				prevSteering(messages)
+			}
+			_ = emit(AgentStreamEvent{
+				Type: AgentEventSteeringApplied,
+			})
+		}
+
+		prevFollowUp := cbs.OnFollowUpApplied
+		cbs.OnFollowUpApplied = func(messages []llm.Message) {
+			if prevFollowUp != nil {
+				prevFollowUp(messages)
+			}
+			_ = emit(AgentStreamEvent{
+				Type: AgentEventFollowUpApplied,
+			})
+		}
+
+		prevDelta := cbs.OnStreamDelta
+		cbs.OnStreamDelta = func(delta llm.ContentBlockDelta) {
+			if prevDelta != nil {
+				prevDelta(delta)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:  AgentEventMessageDelta,
+				Delta: delta.Text,
+			})
+		}
+
+		streamReq.Callbacks = cbs
+		result, err := a.Execute(ctx, streamReq)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		usage := result.Usage
+		_ = emit(AgentStreamEvent{
+			Type:     AgentEventAgentEnd,
+			Decision: result.Decision,
+			Message:  result.Message,
+			Usage:    &usage,
+		})
+	}()
+
+	return eventCh, errCh
+}
+
 // Capabilities returns the agent's capabilities.
 func (a *APIAgent) Capabilities() AgentCapabilities {
 	toolList := a.registry.List()
@@ -156,7 +315,7 @@ func (a *APIAgent) Capabilities() AgentCapabilities {
 	return AgentCapabilities{
 		SupportsTools:      true,
 		AvailableTools:     toolInfos,
-		SupportsStreaming:  false,
+		SupportsStreaming:  a.options.EnableStreaming,
 		SupportsCompaction: true,
 		MaxContextTokens:   a.options.MaxContextTokens,
 		Provider:           "api",

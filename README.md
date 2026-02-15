@@ -114,12 +114,13 @@ The SDK does not inject any opinions. All behavior is explicitly configured by t
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `MaxIterations` | Max agent loop iterations | 50 |
+| `MaxIterations` | Max agent loop iterations (`<=0` means unbounded) | 0 |
 | `MaxMessages` | Max conversation history size | 50 |
 | `MaxTokens` | Max response token count | 4096 |
 | `MaxContextTokens` | Context window size (reported in capabilities) | 0 (unknown) |
 | `SystemPrompt` | System prompt for the agent | `""` (empty) |
 | `CompactConfig` | Context compaction settings | nil (disabled) |
+| `EnableStreaming` | Enable stream-capable execution paths | `false` |
 
 ### CLI Agent (`agent.CLIAgentConfig`)
 
@@ -146,9 +147,11 @@ The SDK does not inject any opinions. All behavior is explicitly configured by t
 | `SystemPrompt` | System message | `""` (empty) |
 | `RepoInstructions` | Pre-loaded instruction content | `""` (auto-loaded if WorkDir set) |
 | `InstructionFiles` | Override instruction file names | `["AGENT.md", "AGENTS.md"]` |
-| `MaxIterations` | Loop iteration limit | 50 |
+| `MaxIterations` | Loop iteration limit (`<=0` means unbounded) | 0 |
+| `DisableIterationLimit` | Force unbounded loop regardless of MaxIterations | `false` |
 | `MaxMessages` | History size limit | 50 |
 | `CompactConfig` | Compaction settings | disabled |
+| `EnableStreaming` | Use provider streaming when supported | `false` |
 
 ### Agent Request (`agent.AgentRequest`)
 
@@ -161,6 +164,13 @@ The SDK does not inject any opinions. All behavior is explicitly configured by t
 | `Context` | Structured context (`AgentContext`) |
 | `Options` | Execution options (`AgentOptions`) |
 | `Callbacks` | Monitoring hooks (`AgentCallbacks`) |
+
+`AgentOptions` supports runtime loop input injection and streaming controls:
+
+- `DisableIterationLimit`: request-level override to cancel iteration cap
+- `EnableStreaming`: request-level stream switch
+- `GetSteeringMessages`: high-priority runtime input fetcher (polled at loop checkpoints)
+- `GetFollowUpMessages`: follow-up runtime input fetcher (after steering)
 
 ### Agent Context (`agent.AgentContext`)
 

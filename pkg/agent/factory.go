@@ -78,6 +78,9 @@ type APIConfig struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// EnableStreaming turns on stream-capable execution paths.
+	EnableStreaming bool
 }
 
 // NewAgent creates a new agent based on the configuration.
@@ -133,11 +136,12 @@ func newAPIAgentFromConfig(cfg AgentConfig) (*APIAgent, error) {
 	}
 
 	opts := APIAgentOptions{
-		MaxIterations: apiCfg.MaxIterations,
-		MaxMessages:   apiCfg.MaxMessages,
-		MaxTokens:     apiCfg.MaxTokens,
-		SystemPrompt:  apiCfg.SystemPrompt,
-		CompactConfig: apiCfg.CompactConfig,
+		MaxIterations:   apiCfg.MaxIterations,
+		MaxMessages:     apiCfg.MaxMessages,
+		MaxTokens:       apiCfg.MaxTokens,
+		SystemPrompt:    apiCfg.SystemPrompt,
+		CompactConfig:   apiCfg.CompactConfig,
+		EnableStreaming: apiCfg.EnableStreaming,
 	}
 
 	return NewAPIAgent(provider, registry, opts), nil

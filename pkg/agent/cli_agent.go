@@ -141,6 +141,56 @@ func (a *CLIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	return convertCLIResponse(cliResp), nil
 }
 
+// ExecuteStream runs the CLI agent and emits coarse-grained stream events.
+// CLI backends are currently non-streaming, so this degrades gracefully.
+func (a *CLIAgent) ExecuteStream(ctx context.Context, req AgentRequest) (<-chan AgentStreamEvent, <-chan error) {
+	eventCh := make(chan AgentStreamEvent, 8)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(eventCh)
+		defer close(errCh)
+
+		select {
+		case <-ctx.Done():
+			errCh <- ctx.Err()
+			return
+		case eventCh <- AgentStreamEvent{Type: AgentEventAgentStart}:
+		}
+
+		result, err := a.Execute(ctx, req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			errCh <- ctx.Err()
+			return
+		case eventCh <- AgentStreamEvent{
+			Type:    AgentEventMessageEnd,
+			Message: result.Message,
+		}:
+		}
+
+		usage := result.Usage
+		select {
+		case <-ctx.Done():
+			errCh <- ctx.Err()
+			return
+		case eventCh <- AgentStreamEvent{
+			Type:     AgentEventAgentEnd,
+			Decision: result.Decision,
+			Message:  result.Message,
+			Usage:    &usage,
+		}:
+		}
+	}()
+
+	return eventCh, errCh
+}
+
 // Capabilities returns the agent's capabilities.
 func (a *CLIAgent) Capabilities() AgentCapabilities {
 	ctx := context.Background()
