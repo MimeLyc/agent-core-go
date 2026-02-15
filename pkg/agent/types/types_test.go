@@ -43,3 +43,17 @@ func TestGetText(t *testing.T) {
 		t.Fatalf("GetText() = %q, want %q", got, "line1\nline2")
 	}
 }
+
+func TestMessageReasoningContentField(t *testing.T) {
+	msg := Message{
+		Role:             RoleAssistant,
+		ReasoningContent: "reasoning text",
+		Content: []ContentBlock{
+			{Type: ContentTypeText, Text: "ok"},
+		},
+	}
+
+	if msg.ReasoningContent != "reasoning text" {
+		t.Fatalf("ReasoningContent = %q, want %q", msg.ReasoningContent, "reasoning text")
+	}
+}

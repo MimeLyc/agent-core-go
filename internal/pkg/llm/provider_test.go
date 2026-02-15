@@ -528,3 +528,122 @@ func containsAt(s, substr string, start int) bool {
 	}
 	return false
 }
+
+func TestOpenAIProviderReasoningContentRoundTrip(t *testing.T) {
+	var capturedPayload map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&capturedPayload); err != nil {
+			t.Fatalf("decode request payload: %v", err)
+		}
+
+		resp := map[string]any{
+			"id":      "chatcmpl-reasoning",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   "gpt-4",
+			"choices": []map[string]any{
+				{
+					"index": 0,
+					"message": map[string]any{
+						"role":              "assistant",
+						"content":           "",
+						"reasoning_content": "followed explicit chain",
+						"tool_calls": []map[string]any{
+							{
+								"id":   "call_2",
+								"type": "function",
+								"function": map[string]any{
+									"name":      "lookup",
+									"arguments": `{"term":"Trinity"}`,
+								},
+							},
+						},
+					},
+					"finish_reason": "tool_calls",
+				},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     10,
+				"completion_tokens": 5,
+				"total_tokens":      15,
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(LLMProviderConfig{
+		Type:           ProviderOpenAI,
+		BaseURL:        server.URL,
+		APIKey:         "test-key",
+		Model:          "gpt-4",
+		TimeoutSeconds: 30,
+	})
+
+	req := AgentRequest{
+		Messages: []Message{
+			NewTextMessage(RoleUser, "Use lookup"),
+			{
+				Role:             RoleAssistant,
+				ReasoningContent: "thought steps",
+				Content: []ContentBlock{
+					{
+						Type:  ContentTypeToolUse,
+						ID:    "call_1",
+						Name:  "lookup",
+						Input: map[string]any{"term": "Neo"},
+					},
+				},
+			},
+			NewToolResultMessage("call_1", "ok", false),
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "lookup",
+				Description: "lookup",
+				InputSchema: map[string]any{"type": "object"},
+			},
+		},
+	}
+
+	resp, err := provider.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+
+	messages, ok := capturedPayload["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("captured messages missing in payload: %#v", capturedPayload)
+	}
+
+	foundAssistantWithToolCall := false
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg["role"] != "assistant" {
+			continue
+		}
+		if _, hasToolCalls := msg["tool_calls"]; !hasToolCalls {
+			continue
+		}
+		if got := msg["reasoning_content"]; got != "thought steps" {
+			t.Fatalf("assistant reasoning_content = %#v, want %q", got, "thought steps")
+		}
+		foundAssistantWithToolCall = true
+	}
+
+	if !foundAssistantWithToolCall {
+		t.Fatalf("did not find assistant tool_call message in request payload: %#v", messages)
+	}
+
+	if resp.ReasoningContent != "followed explicit chain" {
+		t.Fatalf("resp.ReasoningContent = %q, want %q", resp.ReasoningContent, "followed explicit chain")
+	}
+	if msg := resp.ToMessage(); msg.ReasoningContent != "followed explicit chain" {
+		t.Fatalf("ToMessage().ReasoningContent = %q, want %q", msg.ReasoningContent, "followed explicit chain")
+	}
+}

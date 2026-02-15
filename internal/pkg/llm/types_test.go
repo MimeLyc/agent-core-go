@@ -123,3 +123,19 @@ func TestAgentResponseHasToolUse(t *testing.T) {
 		t.Error("HasToolUse() = true for end_turn response")
 	}
 }
+
+func TestAgentResponseToMessagePreservesReasoningContent(t *testing.T) {
+	resp := AgentResponse{
+		Role:             RoleAssistant,
+		ReasoningContent: "thought summary",
+		Content: []ContentBlock{
+			{Type: ContentTypeText, Text: "Response text"},
+		},
+		StopReason: StopReasonEndTurn,
+	}
+
+	msg := resp.ToMessage()
+	if msg.ReasoningContent != "thought summary" {
+		t.Errorf("ReasoningContent = %q, want %q", msg.ReasoningContent, "thought summary")
+	}
+}

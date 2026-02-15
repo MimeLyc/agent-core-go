@@ -55,8 +55,9 @@ type ContentBlockDelta struct {
 
 // Message represents a message in the conversation.
 type Message struct {
-	Role    Role           `json:"role"`
-	Content []ContentBlock `json:"content"`
+	Role             Role           `json:"role"`
+	Content          []ContentBlock `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
 }
 
 // NewTextMessage creates a new text message.
@@ -129,14 +130,15 @@ type AgentRequest struct {
 
 // AgentResponse represents a response from the agent API.
 type AgentResponse struct {
-	ID           string         `json:"id"`
-	Type         string         `json:"type"`
-	Role         Role           `json:"role"`
-	Content      []ContentBlock `json:"content"`
-	Model        string         `json:"model"`
-	StopReason   StopReason     `json:"stop_reason"`
-	StopSequence string         `json:"stop_sequence,omitempty"`
-	Usage        Usage          `json:"usage"`
+	ID               string         `json:"id"`
+	Type             string         `json:"type"`
+	Role             Role           `json:"role"`
+	Content          []ContentBlock `json:"content"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	Model            string         `json:"model"`
+	StopReason       StopReason     `json:"stop_reason"`
+	StopSequence     string         `json:"stop_sequence,omitempty"`
+	Usage            Usage          `json:"usage"`
 }
 
 // Usage represents token usage information.
@@ -148,8 +150,9 @@ type Usage struct {
 // ToMessage converts the response to a Message for conversation history.
 func (r AgentResponse) ToMessage() Message {
 	return Message{
-		Role:    r.Role,
-		Content: r.Content,
+		Role:             r.Role,
+		Content:          r.Content,
+		ReasoningContent: r.ReasoningContent,
 	}
 }
 
