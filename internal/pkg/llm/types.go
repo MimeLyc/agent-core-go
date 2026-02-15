@@ -45,6 +45,14 @@ type ContentBlock struct {
 	IsError   bool   `json:"is_error,omitempty"`
 }
 
+// ContentBlockDelta represents a streamed incremental content update.
+type ContentBlockDelta struct {
+	// Type is currently always text for stream deltas.
+	Type ContentType `json:"type"`
+	// Text is the incremental token/text fragment.
+	Text string `json:"text,omitempty"`
+}
+
 // Message represents a message in the conversation.
 type Message struct {
 	Role    Role           `json:"role"`

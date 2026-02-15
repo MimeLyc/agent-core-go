@@ -1,9 +1,10 @@
 package agent
 
 import (
+	"context"
 	"time"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	agenttypes "github.com/MimeLyc/agent-core-go/pkg/agent/types"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -25,9 +26,6 @@ type AgentRequest struct {
 	// WorkDir is the working directory for tool execution.
 	WorkDir string
 
-	// Context provides structured context (Issue/PR/Repo).
-	Context AgentContext
-
 	// Options configures execution behavior.
 	Options AgentOptions
 
@@ -35,43 +33,30 @@ type AgentRequest struct {
 	Callbacks AgentCallbacks
 }
 
-// AgentContext provides structured context about the task.
-type AgentContext struct {
-	// Repository information
-	RepoFullName string
-	RepoPath     string
-
-	// Generic task context.
-	TaskID       string
-	TaskTitle    string
-	TaskBody     string
-	TaskLabels   []string
-	TaskComments []TaskComment
-
-	// Metadata carries arbitrary task attributes from external systems.
-	Metadata map[string]string
-
-	// Trigger payload (for command-style invocations).
-	CommentBody  string
-	SlashCommand string
-
-	// Additional requirements
-	Requirements string
-}
-
-// TaskComment represents a user comment attached to task context.
-type TaskComment struct {
-	User string
-	Body string
-}
-
 // AgentOptions configures agent execution behavior.
 type AgentOptions struct {
 	// MaxIterations limits the number of agent loop iterations.
 	MaxIterations int
 
+	// DisableIterationLimit removes the loop iteration cap for this request.
+	// This takes precedence over MaxIterations when true.
+	DisableIterationLimit bool
+
+	// EnableStreaming turns on incremental model output when supported.
+	EnableStreaming bool
+
 	// MaxTokens limits the response token count.
 	MaxTokens int
+
+	// TransformContext is an optional pre-LLM context transform hook.
+	TransformContext func(ctx context.Context, messages []agenttypes.Message) ([]agenttypes.Message, error)
+
+	// ConvertToLlm is an optional final conversion hook before provider call.
+	// It converts agent messages into provider-facing LLM messages.
+	ConvertToLlm func(ctx context.Context, messages []agenttypes.Message, providerName string) ([]agenttypes.LLMMessage, error)
+
+	// DisableDefaultContextRules disables built-in compaction/truncation/validation.
+	DisableDefaultContextRules bool
 
 	// Timeout is the maximum execution time.
 	Timeout time.Duration
@@ -85,6 +70,13 @@ type AgentOptions struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// GetSteeringMessages fetches high-priority runtime messages that can steer
+	// the next model turn immediately.
+	GetSteeringMessages LoopInputFetcher
+
+	// GetFollowUpMessages fetches runtime follow-up messages appended after steering.
+	GetFollowUpMessages LoopInputFetcher
 }
 
 // CompactConfig configures context compaction (summarization).
@@ -102,7 +94,7 @@ type CompactConfig struct {
 // AgentCallbacks provides hooks for monitoring agent execution.
 type AgentCallbacks struct {
 	// OnMessage is called when the agent produces a message.
-	OnMessage func(llm.Message)
+	OnMessage func(agenttypes.Message)
 
 	// OnToolCall is called when the agent invokes a tool.
 	OnToolCall func(name string, input map[string]any)
@@ -110,31 +102,34 @@ type AgentCallbacks struct {
 	// OnToolResult is called when a tool returns a result.
 	OnToolResult func(name string, result tools.ToolResult)
 
+	// OnSteeringApplied is called when steering messages are injected.
+	OnSteeringApplied func(messages []agenttypes.Message)
+
+	// OnFollowUpApplied is called when follow-up messages are injected.
+	OnFollowUpApplied func(messages []agenttypes.Message)
+
+	// OnStreamDelta is called for incremental model text output.
+	OnStreamDelta func(delta agenttypes.ContentBlockDelta)
+
 	// OnIteration is called at the start of each iteration.
 	OnIteration func(iteration int)
 }
 
-// Decision indicates how the workflow should proceed.
-type Decision string
+// LoopInputSnapshot describes the current loop state for runtime input providers.
+type LoopInputSnapshot struct {
+	Iteration      int
+	MessageCount   int
+	ToolCallCount  int
+	LastStopReason agenttypes.StopReason
+}
 
-const (
-	// DecisionProceed means changes are ready to commit.
-	DecisionProceed Decision = "proceed"
-
-	// DecisionNeedsInfo means more information is needed.
-	DecisionNeedsInfo Decision = "needs_info"
-
-	// DecisionStop means the task cannot be automated.
-	DecisionStop Decision = "stop"
-)
+// LoopInputFetcher fetches runtime steering/follow-up messages.
+type LoopInputFetcher func(ctx context.Context, snapshot LoopInputSnapshot) ([]agenttypes.Message, error)
 
 // AgentResult contains the output of an agent execution.
 type AgentResult struct {
 	// Success indicates if the execution completed without error.
 	Success bool
-
-	// Decision indicates how the workflow should proceed.
-	Decision Decision
 
 	// Summary is a brief description of what was done.
 	Summary string
@@ -152,7 +147,7 @@ type AgentResult struct {
 	Usage ExecutionUsage
 
 	// RawOutput contains the complete conversation (for debugging).
-	RawOutput []llm.Message
+	RawOutput []agenttypes.Message
 }
 
 // FileChange represents a file modification.

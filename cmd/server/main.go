@@ -13,7 +13,6 @@ import (
 
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
 	"github.com/MimeLyc/agent-core-go/pkg/controller"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools/builtin"
 )
 
@@ -27,9 +26,10 @@ func main() {
 	defer a.Close()
 
 	chatCtrl := controller.NewChatController(a, controller.ChatConfig{
-		SystemPrompt: cfg.systemPrompt,
-		SoulFile:     cfg.soulFile,
-		DefaultDir:   cfg.workDir,
+		SystemPrompt:    cfg.systemPrompt,
+		SoulFile:        cfg.soulFile,
+		DefaultDir:      cfg.workDir,
+		EnableStreaming: cfg.streamingEnabled,
 	})
 
 	mux := http.NewServeMux()
@@ -67,7 +67,7 @@ func main() {
 
 type serverConfig struct {
 	// LLM
-	providerType   llm.LLMProviderType
+	providerType   agent.ProviderType
 	baseURL        string
 	apiKey         string
 	model          string
@@ -76,11 +76,12 @@ type serverConfig struct {
 	maxAttempts    int
 
 	// Agent
-	maxIterations int
-	maxMessages   int
-	systemPrompt  string
-	soulFile      string
-	workDir       string
+	maxIterations    int
+	maxMessages      int
+	systemPrompt     string
+	soulFile         string
+	workDir          string
+	streamingEnabled bool
 
 	// Compaction
 	compactEnabled    bool
@@ -93,18 +94,19 @@ type serverConfig struct {
 
 func loadConfig() serverConfig {
 	return serverConfig{
-		providerType:      llm.LLMProviderType(envOrDefault("LLM_PROVIDER_TYPE", "openai")),
+		providerType:      agent.ProviderType(envOrDefault("LLM_PROVIDER_TYPE", "openai")),
 		baseURL:           envOrDefault("LLM_BASE_URL", "https://api.openai.com"),
 		apiKey:            os.Getenv("LLM_API_KEY"),
 		model:             envOrDefault("LLM_MODEL", "gpt-4.1"),
 		maxTokens:         envIntOrDefault("LLM_MAX_TOKENS", 4096),
 		timeoutSeconds:    envIntOrDefault("LLM_TIMEOUT_SECONDS", 300),
 		maxAttempts:       envIntOrDefault("LLM_MAX_ATTEMPTS", 5),
-		maxIterations:     envIntOrDefault("AGENT_MAX_ITERATIONS", 50),
+		maxIterations:     envIntOrDefault("AGENT_MAX_ITERATIONS", 0),
 		maxMessages:       envIntOrDefault("AGENT_MAX_MESSAGES", 50),
 		systemPrompt:      os.Getenv("AGENT_SYSTEM_PROMPT"),
 		soulFile:          os.Getenv("AGENT_SOUL_FILE"),
 		workDir:           envOrDefault("AGENT_WORK_DIR", "."),
+		streamingEnabled:  envBoolOrDefault("AGENT_ENABLE_STREAMING", false),
 		compactEnabled:    envBoolOrDefault("COMPACT_ENABLED", false),
 		compactThreshold:  envIntOrDefault("COMPACT_THRESHOLD", 30),
 		compactKeepRecent: envIntOrDefault("COMPACT_KEEP_RECENT", 10),
@@ -129,17 +131,18 @@ func createAgent(cfg serverConfig) (agent.Agent, error) {
 	return agent.NewAgent(agent.AgentConfig{
 		Type: agent.AgentTypeAPI,
 		API: &agent.APIConfig{
-			ProviderType:  cfg.providerType,
-			BaseURL:       cfg.baseURL,
-			APIKey:        cfg.apiKey,
-			Model:         cfg.model,
-			MaxTokens:     cfg.maxTokens,
-			Timeout:       time.Duration(cfg.timeoutSeconds) * time.Second,
-			MaxAttempts:   cfg.maxAttempts,
-			MaxIterations: cfg.maxIterations,
-			MaxMessages:   cfg.maxMessages,
-			SystemPrompt:  cfg.systemPrompt,
-			CompactConfig: compactCfg,
+			ProviderType:    cfg.providerType,
+			BaseURL:         cfg.baseURL,
+			APIKey:          cfg.apiKey,
+			Model:           cfg.model,
+			MaxTokens:       cfg.maxTokens,
+			Timeout:         time.Duration(cfg.timeoutSeconds) * time.Second,
+			MaxAttempts:     cfg.maxAttempts,
+			MaxIterations:   cfg.maxIterations,
+			MaxMessages:     cfg.maxMessages,
+			SystemPrompt:    cfg.systemPrompt,
+			CompactConfig:   compactCfg,
+			EnableStreaming: cfg.streamingEnabled,
 		},
 		Registry: builtin.NewRegistryWithBuiltins(),
 	})

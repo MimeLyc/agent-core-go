@@ -12,41 +12,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/instructions"
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/skills"
 	"github.com/MimeLyc/agent-core-go/pkg/soul"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
 const (
-	defaultMaxIterations = 50
+	defaultMaxIterations = 0
 	defaultMaxMessages   = 50
 )
-
-const defaultSystemPrompt = `You are an autonomous engineering agent.
-
-## Role
-- Deliver correct, minimal, production-ready changes for the user's request.
-- Prefer evidence over assumptions: inspect files, run commands, and verify outcomes.
-
-## Agent Loop
-Follow this loop every task:
-1. Observe: inspect repository state and relevant code first.
-2. Plan: decide the smallest safe change that satisfies the request.
-3. Act: execute edits/tools in small, coherent steps.
-4. Verify: run targeted checks/tests and confirm results.
-5. Report: summarize concrete changes and verification output.
-
-## Tool Discipline
-- Use tools intentionally; do not fabricate command output or file content.
-- Keep paths relative to repository root unless explicitly required otherwise.
-- If blocked by missing data, explain what is missing and stop.
-
-## Skills
-- Skills are authoritative workflow bundles.
-- If a relevant skill exists, invoke it with tool ` + "`use_skill`" + ` before significant work.
-- Follow loaded skill instructions exactly unless they conflict with higher-priority system/user constraints.`
 
 // generateToolUseID generates a unique ID for tool_use blocks that have empty IDs.
 // This is needed because some LLM APIs may return tool_use blocks without IDs,
@@ -175,11 +151,9 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 	systemPrompt := buildSystemPrompt(req.SystemPrompt, soulContent, repoInstructions)
 	log.Printf("[orchestrator] system prompt length: %d chars", len(systemPrompt))
 
-	// Set max iterations
+	// Set max iterations.
 	maxIterations := req.MaxIterations
-	if maxIterations <= 0 {
-		maxIterations = defaultMaxIterations
-	}
+	hasIterationLimit := !req.DisableIterationLimit && maxIterations > 0
 
 	// Set max messages for history truncation
 	maxMessages := req.MaxMessages
@@ -199,7 +173,7 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 	seenToolUseIDs := make(map[string]bool)
 
 	// Agent loop
-	for state.Iterations < maxIterations {
+	for !hasIterationLimit || state.Iterations < maxIterations {
 		select {
 		case <-ctx.Done():
 			log.Printf("[orchestrator] context cancelled at iteration %d", state.Iterations)
@@ -208,49 +182,38 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 		}
 
 		state.IncrementIteration()
-		log.Printf("[orchestrator] === iteration %d/%d ===", state.Iterations, maxIterations)
+		if hasIterationLimit {
+			log.Printf("[orchestrator] === iteration %d/%d ===", state.Iterations, maxIterations)
+		} else {
+			log.Printf("[orchestrator] === iteration %d/unbounded ===", state.Iterations)
+		}
 
-		// Handle message history management
-		messages := state.Messages
+		transformPlugins := buildTransformPlugins(req, state, compactor, maxMessages)
+		contextMessages, err := runTransformPlugins(ctx, state.Messages, transformPlugins)
+		if err != nil {
+			return state.ToResult(), fmt.Errorf("transform context failed: %w", err)
+		}
 
-		// Try compaction if enabled and messages exceed threshold
-		if compactor != nil && compactor.ShouldCompact(messages) {
-			log.Printf("[orchestrator] triggering compaction: %d messages exceed threshold %d",
-				len(messages), req.CompactConfig.Threshold)
-			compactedMessages, err := compactor.Compact(ctx, messages)
+		// Convert agent-context messages into provider-ready LLM messages.
+		llmMessages := defaultConvertToLlm(contextMessages)
+		if req.ConvertToLlm != nil {
+			converted, err := req.ConvertToLlm(ctx, contextMessages, l.Provider.Name())
 			if err != nil {
-				log.Printf("[orchestrator] WARNING: compaction failed: %v, falling back to truncation", err)
-			} else {
-				messages = compactedMessages
-				// Update state with compacted messages
-				state.Messages = messages
-				log.Printf("[orchestrator] compaction succeeded: reduced to %d messages", len(messages))
+				return state.ToResult(), fmt.Errorf("convert to llm failed: %w", err)
 			}
-		}
-
-		// Fall back to truncation if still too long
-		if len(messages) > maxMessages {
-			messages = truncateMessages(messages, maxMessages)
-		}
-
-		// Validate messages before sending - check for orphaned tool_results
-		if err := validateToolPairs(messages); err != nil {
-			log.Printf("[orchestrator] ERROR: message validation failed: %v", err)
-			// Try to recover by not truncating
-			messages = state.Messages
-			log.Printf("[orchestrator] falling back to full message history: %d messages", len(messages))
+			llmMessages = converted
 		}
 
 		// Build request
 		agentReq := llm.AgentRequest{
 			System:   systemPrompt,
-			Messages: messages,
+			Messages: llmMessages,
 			Tools:    toolDefs,
 		}
-		log.Printf("[orchestrator] sending request: messages=%d tools=%d", len(messages), len(toolDefs))
+		log.Printf("[orchestrator] sending request: messages=%d tools=%d", len(llmMessages), len(toolDefs))
 
 		// Call the agent
-		resp, err := l.Provider.Call(ctx, agentReq)
+		resp, err := l.callProvider(ctx, agentReq, req.EnableStreaming, req.OnStreamDelta)
 		if err != nil {
 			log.Printf("[orchestrator] ERROR: agent call failed: %v", err)
 			return state.ToResult(), fmt.Errorf("agent call failed: %w", err)
@@ -302,8 +265,13 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 			req.OnMessage(assistantMsg)
 		}
 
-		// Check if we should stop
 		if resp.StopReason == llm.StopReasonEndTurn {
+			// TS-like runtime loop input injection point.
+			steering, followUp := l.fetchLoopInputs(ctx, state, req)
+			if len(steering) > 0 || len(followUp) > 0 {
+				l.applyLoopInputs(state, req, steering, followUp)
+				continue
+			}
 			log.Printf("[orchestrator] agent completed (end_turn) after %d iterations", state.Iterations)
 			return state.ToResult(), nil
 		}
@@ -318,7 +286,7 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 			toolUses := resp.GetToolUses()
 			log.Printf("[orchestrator] executing %d tool(s)", len(toolUses))
 
-			toolResults, err := l.executeTools(ctx, toolCtx, toolUses, req)
+			toolResults, steering, followUp, interrupted, err := l.executeTools(ctx, toolCtx, toolUses, req, state)
 			if err != nil {
 				log.Printf("[orchestrator] ERROR: tool execution failed: %v", err)
 				return state.ToResult(), fmt.Errorf("tool execution failed: %w", err)
@@ -338,9 +306,18 @@ func (l *AgentLoop) Run(ctx context.Context, req OrchestratorRequest) (Orchestra
 			// Build tool result message
 			resultMsg := buildToolResultMessage(toolResults)
 			state.AddMessage(resultMsg)
+			if interrupted {
+				l.applyLoopInputs(state, req, steering, followUp)
+				continue
+			}
 		} else {
 			log.Printf("[orchestrator] WARNING: unexpected stop_reason=%s, no tool_use", resp.StopReason)
 		}
+	}
+
+	if !hasIterationLimit {
+		// Defensive fallback: the loop should only terminate via returns above.
+		return state.ToResult(), nil
 	}
 
 	log.Printf("[orchestrator] ERROR: max iterations (%d) reached", maxIterations)
@@ -353,8 +330,11 @@ func (l *AgentLoop) executeTools(
 	toolCtx *tools.ToolContext,
 	uses []llm.ContentBlock,
 	req OrchestratorRequest,
-) ([]toolExecResult, error) {
+	state *State,
+) ([]toolExecResult, []llm.Message, []llm.Message, bool, error) {
 	results := make([]toolExecResult, 0, len(uses))
+	var pendingSteering []llm.Message
+	var pendingFollowUp []llm.Message
 
 	for _, use := range uses {
 		log.Printf("[orchestrator] calling tool: %s id=%s input=%v", use.Name, use.ID, use.Input)
@@ -370,6 +350,12 @@ func (l *AgentLoop) executeTools(
 			})
 			if req.OnToolResult != nil {
 				req.OnToolResult(use.Name, result)
+			}
+			steering, followUp := l.fetchLoopInputs(ctx, state, req)
+			if len(steering) > 0 || len(followUp) > 0 {
+				pendingSteering = steering
+				pendingFollowUp = followUp
+				return results, pendingSteering, pendingFollowUp, true, nil
 			}
 			continue
 		}
@@ -405,9 +391,105 @@ func (l *AgentLoop) executeTools(
 			Input:  use.Input,
 			Result: result,
 		})
+
+		steering, followUp := l.fetchLoopInputs(ctx, state, req)
+		if len(steering) > 0 || len(followUp) > 0 {
+			pendingSteering = steering
+			pendingFollowUp = followUp
+			return results, pendingSteering, pendingFollowUp, true, nil
+		}
 	}
 
-	return results, nil
+	return results, pendingSteering, pendingFollowUp, false, nil
+}
+
+func (l *AgentLoop) callProvider(
+	ctx context.Context,
+	req llm.AgentRequest,
+	enableStreaming bool,
+	onDelta func(llm.ContentBlockDelta),
+) (llm.AgentResponse, error) {
+	if enableStreaming {
+		if provider, ok := l.Provider.(llm.StreamingProvider); ok {
+			return provider.Stream(ctx, req, onDelta)
+		}
+	}
+	return l.Provider.Call(ctx, req)
+}
+
+func (l *AgentLoop) fetchLoopInputs(ctx context.Context, state *State, req OrchestratorRequest) ([]llm.Message, []llm.Message) {
+	snapshot := LoopInputSnapshot{
+		Iteration:      state.Iterations,
+		MessageCount:   len(state.Messages),
+		ToolCallCount:  len(state.ToolCalls),
+		LastStopReason: state.LastResponse.StopReason,
+	}
+
+	var steering []llm.Message
+	var followUp []llm.Message
+	if req.GetSteeringMessages != nil {
+		messages, err := req.GetSteeringMessages(ctx, snapshot)
+		if err != nil {
+			log.Printf("[orchestrator] WARNING: steering provider failed: %v", err)
+		} else {
+			steering = normalizeLoopInputMessages(messages)
+		}
+	}
+
+	if req.GetFollowUpMessages != nil {
+		messages, err := req.GetFollowUpMessages(ctx, snapshot)
+		if err != nil {
+			log.Printf("[orchestrator] WARNING: follow-up provider failed: %v", err)
+		} else {
+			followUp = normalizeLoopInputMessages(messages)
+		}
+	}
+
+	return steering, followUp
+}
+
+func normalizeLoopInputMessages(messages []llm.Message) []llm.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	normalized := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		if len(msg.Content) == 0 {
+			continue
+		}
+		if msg.Role == "" {
+			msg.Role = llm.RoleUser
+		}
+		normalized = append(normalized, msg)
+	}
+	return normalized
+}
+
+func (l *AgentLoop) applyLoopInputs(
+	state *State,
+	req OrchestratorRequest,
+	steering []llm.Message,
+	followUp []llm.Message,
+) {
+	if len(steering) > 0 {
+		for _, msg := range steering {
+			state.AddMessage(msg)
+		}
+		if req.OnSteeringApplied != nil {
+			req.OnSteeringApplied(steering)
+		}
+		log.Printf("[orchestrator] applied %d steering message(s)", len(steering))
+	}
+
+	if len(followUp) > 0 {
+		for _, msg := range followUp {
+			state.AddMessage(msg)
+		}
+		if req.OnFollowUpApplied != nil {
+			req.OnFollowUpApplied(followUp)
+		}
+		log.Printf("[orchestrator] applied %d follow-up message(s)", len(followUp))
+	}
 }
 
 type toolExecResult struct {
@@ -442,10 +524,9 @@ func buildSystemPrompt(base, soulContent, repoInstructions string) string {
 	parts := []string{}
 
 	base = strings.TrimSpace(base)
-	if base == "" {
-		base = defaultSystemPrompt
+	if base != "" {
+		parts = append(parts, base)
 	}
-	parts = append(parts, base)
 
 	soulContent = strings.TrimSpace(soulContent)
 	if soulContent != "" {
@@ -469,6 +550,9 @@ func buildSystemPrompt(base, soulContent, repoInstructions string) string {
 			"",
 			repoInstructions,
 		}, "\n"))
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	return strings.Join(parts, "\n\n")
 }

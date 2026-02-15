@@ -6,8 +6,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
-	"github.com/MimeLyc/agent-core-go/pkg/orchestrator"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/orchestrator"
+	agenttypes "github.com/MimeLyc/agent-core-go/pkg/agent/types"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -29,6 +30,7 @@ type APIAgent struct {
 // APIAgentOptions configures the APIAgent.
 type APIAgentOptions struct {
 	// MaxIterations limits agent loop iterations.
+	// Non-positive values mean no iteration cap.
 	MaxIterations int
 
 	// MaxMessages limits conversation history size.
@@ -45,6 +47,9 @@ type APIAgentOptions struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// EnableStreaming enables stream-mode execution paths.
+	EnableStreaming bool
 }
 
 // NewAPIAgent creates a new APIAgent.
@@ -56,10 +61,7 @@ func NewAPIAgent(provider llm.LLMProvider, registry *tools.Registry, opts APIAge
 	}
 	loop := orchestrator.NewAgentLoop(provider, registry)
 
-	// Set defaults
-	if opts.MaxIterations <= 0 {
-		opts.MaxIterations = 50
-	}
+	// Set defaults. Non-positive MaxIterations means unbounded.
 	if opts.MaxMessages <= 0 {
 		opts.MaxMessages = 50
 	}
@@ -81,23 +83,34 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 	log.Printf("[api-agent] starting execution: workdir=%s task_length=%d",
 		req.WorkDir, len(req.Task))
 
+	systemPrompt := req.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = a.options.SystemPrompt
+	}
+
 	// Convert AgentRequest to OrchestratorRequest
 	orchReq := orchestrator.OrchestratorRequest{
-		SystemPrompt:     req.SystemPrompt,
+		SystemPrompt:     systemPrompt,
 		RepoInstructions: req.RepoInstructions,
 		SoulFile:         req.SoulFile,
 		InitialMessages: []llm.Message{
 			llm.NewTextMessage(llm.RoleUser, req.Task),
 		},
-		MaxIterations: a.options.MaxIterations,
-		MaxMessages:   a.options.MaxMessages,
-		WorkDir:       req.WorkDir,
-		ToolContext:   tools.NewToolContext(req.WorkDir),
+		MaxIterations:              a.options.MaxIterations,
+		MaxMessages:                a.options.MaxMessages,
+		WorkDir:                    req.WorkDir,
+		ToolContext:                tools.NewToolContext(req.WorkDir),
+		EnableStreaming:            a.options.EnableStreaming || req.Options.EnableStreaming,
+		DisableIterationLimit:      req.Options.DisableIterationLimit,
+		DisableDefaultContextRules: req.Options.DisableDefaultContextRules,
 	}
 
 	// Apply request options
 	if req.Options.MaxIterations > 0 {
 		orchReq.MaxIterations = req.Options.MaxIterations
+	}
+	if req.Options.DisableIterationLimit {
+		orchReq.MaxIterations = 0
 	}
 	if req.Options.CompactConfig != nil {
 		orchReq.CompactConfig = orchestrator.CompactConfig{
@@ -115,13 +128,76 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 
 	// Set up callbacks
 	if req.Callbacks.OnMessage != nil {
-		orchReq.OnMessage = req.Callbacks.OnMessage
+		orchReq.OnMessage = func(msg llm.Message) {
+			req.Callbacks.OnMessage(fromLLMMessage(msg))
+		}
 	}
 	if req.Callbacks.OnToolCall != nil {
 		orchReq.OnToolCall = req.Callbacks.OnToolCall
 	}
 	if req.Callbacks.OnToolResult != nil {
 		orchReq.OnToolResult = req.Callbacks.OnToolResult
+	}
+	if req.Callbacks.OnSteeringApplied != nil {
+		orchReq.OnSteeringApplied = func(messages []llm.Message) {
+			req.Callbacks.OnSteeringApplied(fromLLMMessages(messages))
+		}
+	}
+	if req.Callbacks.OnFollowUpApplied != nil {
+		orchReq.OnFollowUpApplied = func(messages []llm.Message) {
+			req.Callbacks.OnFollowUpApplied(fromLLMMessages(messages))
+		}
+	}
+	if req.Callbacks.OnStreamDelta != nil {
+		orchReq.OnStreamDelta = func(delta llm.ContentBlockDelta) {
+			req.Callbacks.OnStreamDelta(fromLLMContentDelta(delta))
+		}
+	}
+	if req.Options.GetSteeringMessages != nil {
+		orchReq.GetSteeringMessages = func(ctx context.Context, snapshot orchestrator.LoopInputSnapshot) ([]llm.Message, error) {
+			msgs, err := req.Options.GetSteeringMessages(ctx, LoopInputSnapshot{
+				Iteration:      snapshot.Iteration,
+				MessageCount:   snapshot.MessageCount,
+				ToolCallCount:  snapshot.ToolCallCount,
+				LastStopReason: fromLLMStopReason(snapshot.LastStopReason),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return toLLMMessages(msgs), nil
+		}
+	}
+	if req.Options.GetFollowUpMessages != nil {
+		orchReq.GetFollowUpMessages = func(ctx context.Context, snapshot orchestrator.LoopInputSnapshot) ([]llm.Message, error) {
+			msgs, err := req.Options.GetFollowUpMessages(ctx, LoopInputSnapshot{
+				Iteration:      snapshot.Iteration,
+				MessageCount:   snapshot.MessageCount,
+				ToolCallCount:  snapshot.ToolCallCount,
+				LastStopReason: fromLLMStopReason(snapshot.LastStopReason),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return toLLMMessages(msgs), nil
+		}
+	}
+	if req.Options.TransformContext != nil {
+		orchReq.TransformContext = func(ctx context.Context, messages []llm.Message) ([]llm.Message, error) {
+			transformed, err := req.Options.TransformContext(ctx, fromLLMMessages(messages))
+			if err != nil {
+				return nil, err
+			}
+			return toLLMMessages(transformed), nil
+		}
+	}
+	if req.Options.ConvertToLlm != nil {
+		orchReq.ConvertToLlm = func(ctx context.Context, messages []llm.Message, providerName string) ([]llm.Message, error) {
+			converted, err := req.Options.ConvertToLlm(ctx, fromLLMMessages(messages), providerName)
+			if err != nil {
+				return nil, err
+			}
+			return toLLMMessages(converted), nil
+		}
 	}
 
 	// Run the orchestrator
@@ -136,10 +212,128 @@ func (a *APIAgent) Execute(ctx context.Context, req AgentRequest) (AgentResult, 
 
 	// Convert OrchestratorResult to AgentResult
 	result := convertOrchestratorResult(orchResult, startTime)
-	log.Printf("[api-agent] execution complete: success=%v decision=%s iterations=%d",
-		result.Success, result.Decision, result.Usage.TotalIterations)
+	log.Printf("[api-agent] execution complete: success=%v iterations=%d",
+		result.Success, result.Usage.TotalIterations)
 
 	return result, nil
+}
+
+// ExecuteStream runs the agent and emits structured stream events.
+func (a *APIAgent) ExecuteStream(
+	ctx context.Context, req AgentRequest) (<-chan AgentStreamEvent, <-chan error) {
+	eventCh := make(chan AgentStreamEvent, 128)
+	errCh := make(chan error, 1)
+
+	if !a.options.EnableStreaming && !req.Options.EnableStreaming {
+		close(eventCh)
+		errCh <- fmt.Errorf("streaming is disabled by configuration")
+		close(errCh)
+		return eventCh, errCh
+	}
+
+	go func() {
+		defer close(eventCh)
+		defer close(errCh)
+
+		emit := func(evt AgentStreamEvent) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case eventCh <- evt:
+				return true
+			}
+		}
+
+		if !emit(AgentStreamEvent{Type: AgentEventAgentStart}) {
+			return
+		}
+
+		streamReq := req
+		streamReq.Options.EnableStreaming = true
+		cbs := streamReq.Callbacks
+
+		prevMessage := cbs.OnMessage
+		cbs.OnMessage = func(msg agenttypes.Message) {
+			if prevMessage != nil {
+				prevMessage(msg)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:    AgentEventMessageEnd,
+				Message: msg.GetText(),
+			})
+		}
+
+		prevToolCall := cbs.OnToolCall
+		cbs.OnToolCall = func(name string, input map[string]any) {
+			if prevToolCall != nil {
+				prevToolCall(name, input)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:     AgentEventToolCall,
+				ToolName: name,
+			})
+		}
+
+		prevToolResult := cbs.OnToolResult
+		cbs.OnToolResult = func(name string, result tools.ToolResult) {
+			if prevToolResult != nil {
+				prevToolResult(name, result)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:     AgentEventToolResult,
+				ToolName: name,
+				Message:  result.Content,
+				IsError:  result.IsError,
+			})
+		}
+
+		prevSteering := cbs.OnSteeringApplied
+		cbs.OnSteeringApplied = func(messages []agenttypes.Message) {
+			if prevSteering != nil {
+				prevSteering(messages)
+			}
+			_ = emit(AgentStreamEvent{
+				Type: AgentEventSteeringApplied,
+			})
+		}
+
+		prevFollowUp := cbs.OnFollowUpApplied
+		cbs.OnFollowUpApplied = func(messages []agenttypes.Message) {
+			if prevFollowUp != nil {
+				prevFollowUp(messages)
+			}
+			_ = emit(AgentStreamEvent{
+				Type: AgentEventFollowUpApplied,
+			})
+		}
+
+		prevDelta := cbs.OnStreamDelta
+		cbs.OnStreamDelta = func(delta agenttypes.ContentBlockDelta) {
+			if prevDelta != nil {
+				prevDelta(delta)
+			}
+			_ = emit(AgentStreamEvent{
+				Type:  AgentEventMessageDelta,
+				Delta: delta.Text,
+			})
+		}
+
+		streamReq.Callbacks = cbs
+		result, err := a.Execute(ctx, streamReq)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		usage := result.Usage
+		_ = emit(AgentStreamEvent{
+			Type:    AgentEventAgentEnd,
+			Message: result.Message,
+			Usage:   &usage,
+		})
+	}()
+
+	return eventCh, errCh
 }
 
 // Capabilities returns the agent's capabilities.
@@ -156,7 +350,7 @@ func (a *APIAgent) Capabilities() AgentCapabilities {
 	return AgentCapabilities{
 		SupportsTools:      true,
 		AvailableTools:     toolInfos,
-		SupportsStreaming:  false,
+		SupportsStreaming:  a.options.EnableStreaming,
 		SupportsCompaction: true,
 		MaxContextTokens:   a.options.MaxContextTokens,
 		Provider:           "api",
@@ -173,17 +367,16 @@ func convertOrchestratorResult(orchResult orchestrator.OrchestratorResult, start
 	finalText := orchResult.GetFinalText()
 
 	result := AgentResult{
-		Success:  true,
-		Decision: DecisionProceed,
-		Summary:  finalText,
-		Message:  finalText,
+		Success: true,
+		Summary: finalText,
+		Message: finalText,
 		Usage: ExecutionUsage{
 			TotalIterations:   orchResult.TotalIterations,
 			TotalInputTokens:  orchResult.TotalInputTokens,
 			TotalOutputTokens: orchResult.TotalOutputTokens,
 			TotalDuration:     time.Since(startTime),
 		},
-		RawOutput: orchResult.Messages,
+		RawOutput: fromLLMMessages(orchResult.Messages),
 	}
 
 	// Convert tool calls
@@ -197,4 +390,115 @@ func convertOrchestratorResult(orchResult orchestrator.OrchestratorResult, start
 	}
 
 	return result
+}
+
+func fromLLMStopReason(reason llm.StopReason) agenttypes.StopReason {
+	return agenttypes.StopReason(reason)
+}
+
+func fromLLMContentType(t llm.ContentType) agenttypes.ContentType {
+	return agenttypes.ContentType(t)
+}
+
+func toLLMContentType(t agenttypes.ContentType) llm.ContentType {
+	return llm.ContentType(t)
+}
+
+func fromLLMRole(r llm.Role) agenttypes.MessageRole {
+	switch r {
+	case llm.RoleAssistant:
+		return agenttypes.RoleAssistant
+	case llm.RoleUser:
+		return agenttypes.RoleUser
+	default:
+		return agenttypes.MessageRole(r)
+	}
+}
+
+func toLLMRole(r agenttypes.MessageRole) llm.Role {
+	switch r {
+	case agenttypes.RoleAssistant:
+		return llm.RoleAssistant
+	case agenttypes.RoleSystem, agenttypes.RoleDeveloper, agenttypes.RoleUser, agenttypes.RoleTool:
+		return llm.RoleUser
+	default:
+		return llm.RoleUser
+	}
+}
+
+func fromLLMContentBlock(block llm.ContentBlock) agenttypes.ContentBlock {
+	return agenttypes.ContentBlock{
+		Type:      fromLLMContentType(block.Type),
+		Text:      block.Text,
+		ID:        block.ID,
+		Name:      block.Name,
+		Input:     block.Input,
+		ToolUseID: block.ToolUseID,
+		Content:   block.Content,
+		IsError:   block.IsError,
+	}
+}
+
+func toLLMContentBlock(block agenttypes.ContentBlock) llm.ContentBlock {
+	return llm.ContentBlock{
+		Type:      toLLMContentType(block.Type),
+		Text:      block.Text,
+		ID:        block.ID,
+		Name:      block.Name,
+		Input:     block.Input,
+		ToolUseID: block.ToolUseID,
+		Content:   block.Content,
+		IsError:   block.IsError,
+	}
+}
+
+func fromLLMMessage(msg llm.Message) agenttypes.Message {
+	content := make([]agenttypes.ContentBlock, 0, len(msg.Content))
+	for _, block := range msg.Content {
+		content = append(content, fromLLMContentBlock(block))
+	}
+	return agenttypes.Message{
+		Role:    fromLLMRole(msg.Role),
+		Content: content,
+	}
+}
+
+func toLLMMessage(msg agenttypes.Message) llm.Message {
+	content := make([]llm.ContentBlock, 0, len(msg.Content))
+	for _, block := range msg.Content {
+		content = append(content, toLLMContentBlock(block))
+	}
+	return llm.Message{
+		Role:    toLLMRole(msg.Role),
+		Content: content,
+	}
+}
+
+func fromLLMMessages(messages []llm.Message) []agenttypes.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]agenttypes.Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, fromLLMMessage(msg))
+	}
+	return out
+}
+
+func toLLMMessages(messages []agenttypes.Message) []llm.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, toLLMMessage(msg))
+	}
+	return out
+}
+
+func fromLLMContentDelta(delta llm.ContentBlockDelta) agenttypes.ContentBlockDelta {
+	return agenttypes.ContentBlockDelta{
+		Type: fromLLMContentType(delta.Type),
+		Text: delta.Text,
+	}
 }

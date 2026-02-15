@@ -6,7 +6,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 )
 
 // CompactConfig holds configuration for context compaction.

@@ -419,6 +419,56 @@ func TestOpenAIProviderToolCallsWithStopFinishReason(t *testing.T) {
 	}
 }
 
+func TestOpenAIProviderStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		streamFlag, _ := payload["stream"].(bool)
+		if !streamFlag {
+			t.Fatalf("expected stream=true in request payload")
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"model\":\"gpt-4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(LLMProviderConfig{
+		Type:           ProviderOpenAI,
+		BaseURL:        server.URL,
+		APIKey:         "test-key",
+		Model:          "gpt-4",
+		TimeoutSeconds: 30,
+	})
+
+	req := AgentRequest{
+		Messages: []Message{
+			NewTextMessage(RoleUser, "hello"),
+		},
+	}
+
+	deltas := make([]string, 0, 2)
+	resp, err := provider.Stream(context.Background(), req, func(delta ContentBlockDelta) {
+		deltas = append(deltas, delta.Text)
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if len(deltas) != 2 || deltas[0] != "Hel" || deltas[1] != "lo" {
+		t.Fatalf("unexpected deltas: %v", deltas)
+	}
+	if resp.GetText() != "Hello" {
+		t.Fatalf("expected final text Hello, got %q", resp.GetText())
+	}
+	if resp.StopReason != StopReasonEndTurn {
+		t.Fatalf("expected stop reason end_turn, got %s", resp.StopReason)
+	}
+}
+
 func TestAgentRunnerBackwardCompatibility(t *testing.T) {
 	// Create a mock server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

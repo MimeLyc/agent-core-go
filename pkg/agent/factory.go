@@ -6,8 +6,16 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
+)
+
+// ProviderType identifies supported LLM provider backends for API agents.
+type ProviderType string
+
+const (
+	ProviderTypeClaude ProviderType = "claude"
+	ProviderTypeOpenAI ProviderType = "openai"
 )
 
 // AgentType identifies the type of agent to create.
@@ -47,7 +55,7 @@ type AgentConfig struct {
 type APIConfig struct {
 	// ProviderType specifies which LLM provider to use ("claude", "openai").
 	// Must be set explicitly by the caller.
-	ProviderType llm.LLMProviderType
+	ProviderType ProviderType
 
 	// BaseURL is the LLM API base URL.
 	BaseURL string
@@ -78,6 +86,9 @@ type APIConfig struct {
 
 	// CompactConfig configures context compaction.
 	CompactConfig *CompactConfig
+
+	// EnableStreaming turns on stream-capable execution paths.
+	EnableStreaming bool
 }
 
 // NewAgent creates a new agent based on the configuration.
@@ -113,7 +124,7 @@ func newAPIAgentFromConfig(cfg AgentConfig) (*APIAgent, error) {
 
 	// Create LLM provider based on configured type
 	providerCfg := llm.LLMProviderConfig{
-		Type:           apiCfg.ProviderType,
+		Type:           llm.LLMProviderType(apiCfg.ProviderType),
 		BaseURL:        apiCfg.BaseURL,
 		APIKey:         apiCfg.APIKey,
 		Model:          apiCfg.Model,
@@ -133,11 +144,12 @@ func newAPIAgentFromConfig(cfg AgentConfig) (*APIAgent, error) {
 	}
 
 	opts := APIAgentOptions{
-		MaxIterations: apiCfg.MaxIterations,
-		MaxMessages:   apiCfg.MaxMessages,
-		MaxTokens:     apiCfg.MaxTokens,
-		SystemPrompt:  apiCfg.SystemPrompt,
-		CompactConfig: apiCfg.CompactConfig,
+		MaxIterations:   apiCfg.MaxIterations,
+		MaxMessages:     apiCfg.MaxMessages,
+		MaxTokens:       apiCfg.MaxTokens,
+		SystemPrompt:    apiCfg.SystemPrompt,
+		CompactConfig:   apiCfg.CompactConfig,
+		EnableStreaming: apiCfg.EnableStreaming,
 	}
 
 	return NewAPIAgent(provider, registry, opts), nil

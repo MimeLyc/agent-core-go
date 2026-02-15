@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/MimeLyc/agent-core-go/pkg/agent"
@@ -13,9 +14,11 @@ import (
 
 // stubAgent implements agent.Agent for testing.
 type stubAgent struct {
-	result agent.AgentResult
-	err    error
-	lastReq agent.AgentRequest
+	result    agent.AgentResult
+	err       error
+	lastReq   agent.AgentRequest
+	stream    []agent.AgentStreamEvent
+	streamErr error
 }
 
 func (s *stubAgent) Execute(_ context.Context, req agent.AgentRequest) (agent.AgentResult, error) {
@@ -27,14 +30,28 @@ func (s *stubAgent) Capabilities() agent.AgentCapabilities {
 	return agent.AgentCapabilities{}
 }
 
+func (s *stubAgent) ExecuteStream(_ context.Context, req agent.AgentRequest) (<-chan agent.AgentStreamEvent, <-chan error) {
+	s.lastReq = req
+	eventCh := make(chan agent.AgentStreamEvent, len(s.stream))
+	errCh := make(chan error, 1)
+	for _, evt := range s.stream {
+		eventCh <- evt
+	}
+	close(eventCh)
+	if s.streamErr != nil {
+		errCh <- s.streamErr
+	}
+	close(errCh)
+	return eventCh, errCh
+}
+
 func (s *stubAgent) Close() error { return nil }
 
 func TestHandleChat_Success(t *testing.T) {
 	stub := &stubAgent{
 		result: agent.AgentResult{
-			Success:  true,
-			Decision: agent.DecisionProceed,
-			Message:  "Hello back!",
+			Success: true,
+			Message: "Hello back!",
 			Usage: agent.ExecutionUsage{
 				TotalIterations:   2,
 				TotalInputTokens:  100,
@@ -59,15 +76,21 @@ func TestHandleChat_Success(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	payload := w.Body.Bytes()
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("failed to decode raw response: %v", err)
+	}
+	if _, ok := raw["decision"]; ok {
+		t.Fatalf("did not expect decision in response JSON: %v", raw)
+	}
+
 	var resp ChatResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+	if err := json.Unmarshal(payload, &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 	if resp.Reply != "Hello back!" {
 		t.Errorf("expected reply 'Hello back!', got %q", resp.Reply)
-	}
-	if resp.Decision != "proceed" {
-		t.Errorf("expected decision 'proceed', got %q", resp.Decision)
 	}
 	if resp.Usage.Iterations != 2 {
 		t.Errorf("expected 2 iterations, got %d", resp.Usage.Iterations)
@@ -114,7 +137,7 @@ func TestHandleChat_InvalidJSON(t *testing.T) {
 
 func TestHandleChat_CustomWorkDir(t *testing.T) {
 	stub := &stubAgent{
-		result: agent.AgentResult{Decision: agent.DecisionProceed},
+		result: agent.AgentResult{},
 	}
 	ctrl := NewChatController(stub, ChatConfig{DefaultDir: "/default"})
 
@@ -156,5 +179,34 @@ func TestHandleHealth(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleChatStream_Success(t *testing.T) {
+	stub := &stubAgent{
+		stream: []agent.AgentStreamEvent{
+			{Type: agent.AgentEventAgentStart},
+			{Type: agent.AgentEventMessageDelta, Delta: "Hel"},
+			{Type: agent.AgentEventMessageDelta, Delta: "lo"},
+			{Type: agent.AgentEventAgentEnd},
+		},
+	}
+	ctrl := NewChatController(stub, ChatConfig{
+		DefaultDir:      "/tmp",
+		EnableStreaming: true,
+	})
+
+	body := `{"message":"hello"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/stream", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	ctrl.HandleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "event: message_delta") {
+		t.Fatalf("expected SSE stream output, got %q", w.Body.String())
 	}
 }

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -149,6 +151,95 @@ func (p *OpenAIProvider) Call(ctx context.Context, req AgentRequest) (AgentRespo
 	return AgentResponse{}, lastErr
 }
 
+// Stream sends an AgentRequest to OpenAI-compatible APIs using SSE streaming.
+// It emits text deltas via onDelta and returns the assembled final response.
+func (p *OpenAIProvider) Stream(ctx context.Context, req AgentRequest, onDelta func(ContentBlockDelta)) (AgentResponse, error) {
+	if strings.TrimSpace(p.BaseURL) == "" {
+		return AgentResponse{}, errors.New("OpenAI API base URL is empty")
+	}
+	if strings.TrimSpace(p.APIKey) == "" {
+		return AgentResponse{}, errors.New("OpenAI API key is empty")
+	}
+	if strings.TrimSpace(p.Model) == "" {
+		return AgentResponse{}, errors.New("OpenAI API model is empty")
+	}
+
+	openaiReq := p.convertToOpenAIRequest(req)
+	openaiReq.Stream = true
+
+	payload, err := json.Marshal(openaiReq)
+	if err != nil {
+		return AgentResponse{}, fmt.Errorf("marshal request: %w", err)
+	}
+
+	maxAttempts := p.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = defaultOpenAIMaxAttempts
+	}
+	backoff := p.Backoff
+	if backoff == nil {
+		backoff = openaiDefaultBackoff
+	}
+	sleep := p.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+
+	client := p.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: p.Timeout}
+	}
+
+	timeout := p.Timeout
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		log.Printf("[openai-provider] streaming API request attempt %d/%d", attempt, maxAttempts)
+		streamBody, status, err := p.doStreamRequest(ctx, client, payload)
+		requestErr := err
+		if err != nil {
+			lastErr = err
+		} else if status < 400 {
+			resp, streamErr := parseOpenAIStream(streamBody, onDelta)
+			closeErr := streamBody.Close()
+			if streamErr == nil && closeErr == nil {
+				return resp, nil
+			}
+			if streamErr != nil {
+				lastErr = streamErr
+			} else {
+				lastErr = closeErr
+			}
+		} else {
+			if streamBody != nil {
+				body, readErr := io.ReadAll(streamBody)
+				_ = streamBody.Close()
+				if readErr != nil {
+					lastErr = readErr
+				} else {
+					lastErr = wrapOpenAIAPIError(body, status, nil)
+				}
+			}
+		}
+
+		log.Printf("[openai-provider] ERROR: stream attempt %d failed: %v", attempt, lastErr)
+		if attempt == maxAttempts || !shouldRetryOpenAI(status, requestErr) {
+			return AgentResponse{}, lastErr
+		}
+		delay := backoff(attempt)
+		log.Printf("[openai-provider] retrying stream in %v", delay)
+		sleep(delay)
+	}
+
+	return AgentResponse{}, lastErr
+}
+
 // OpenAI request/response types
 
 type openaiRequest struct {
@@ -158,6 +249,7 @@ type openaiRequest struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	Tools       []openaiTool    `json:"tools,omitempty"`
 	ToolChoice  string          `json:"tool_choice,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
 }
 
 type openaiMessage struct {
@@ -201,6 +293,33 @@ type openaiResponse struct {
 		Index        int           `json:"index"`
 		Message      openaiMessage `json:"message"`
 		FinishReason string        `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+type openaiStreamResponse struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index int `json:"index"`
+		Delta struct {
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -451,6 +570,170 @@ func (p *OpenAIProvider) doRequest(ctx context.Context, client *http.Client, pay
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return body, resp.StatusCode, nil
+}
+
+func (p *OpenAIProvider) doStreamRequest(ctx context.Context, client *http.Client, payload []byte) (io.ReadCloser, int, error) {
+	base := strings.TrimRight(p.BaseURL, "/")
+	if !strings.HasSuffix(base, openaiAPIPath) {
+		base = base + openaiAPIPath
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base, bytes.NewReader(payload))
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	if resp.StatusCode >= 400 {
+		return resp.Body, resp.StatusCode, nil
+	}
+	return resp.Body, resp.StatusCode, nil
+}
+
+func parseOpenAIStream(body io.Reader, onDelta func(ContentBlockDelta)) (AgentResponse, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	type toolCallAcc struct {
+		ID        string
+		Name      string
+		Arguments strings.Builder
+	}
+
+	var responseID string
+	var model string
+	var finishReason string
+	var textBuilder strings.Builder
+	toolCalls := make(map[int]*toolCallAcc)
+	usage := Usage{}
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk openaiStreamResponse
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return AgentResponse{}, fmt.Errorf("parse stream chunk: %w", err)
+		}
+		if chunk.ID != "" {
+			responseID = chunk.ID
+		}
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+			usage.InputTokens = chunk.Usage.PromptTokens
+			usage.OutputTokens = chunk.Usage.CompletionTokens
+		}
+
+		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" {
+				textBuilder.WriteString(choice.Delta.Content)
+				if onDelta != nil {
+					onDelta(ContentBlockDelta{
+						Type: ContentTypeText,
+						Text: choice.Delta.Content,
+					})
+				}
+			}
+
+			for _, tc := range choice.Delta.ToolCalls {
+				acc := toolCalls[tc.Index]
+				if acc == nil {
+					acc = &toolCallAcc{}
+					toolCalls[tc.Index] = acc
+				}
+				if tc.ID != "" {
+					acc.ID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					acc.Name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					acc.Arguments.WriteString(tc.Function.Arguments)
+				}
+			}
+
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				finishReason = *choice.FinishReason
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return AgentResponse{}, err
+	}
+
+	content := make([]ContentBlock, 0, 1+len(toolCalls))
+	if textBuilder.Len() > 0 {
+		content = append(content, ContentBlock{
+			Type: ContentTypeText,
+			Text: textBuilder.String(),
+		})
+	}
+
+	if len(toolCalls) > 0 {
+		indices := make([]int, 0, len(toolCalls))
+		for idx := range toolCalls {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+
+		for _, idx := range indices {
+			acc := toolCalls[idx]
+			var input map[string]any
+			args := strings.TrimSpace(acc.Arguments.String())
+			if args != "" {
+				_ = json.Unmarshal([]byte(args), &input)
+			}
+			content = append(content, ContentBlock{
+				Type:  ContentTypeToolUse,
+				ID:    acc.ID,
+				Name:  acc.Name,
+				Input: input,
+			})
+		}
+	}
+
+	stopReason := StopReasonEndTurn
+	switch finishReason {
+	case "tool_calls":
+		stopReason = StopReasonToolUse
+	case "length":
+		stopReason = StopReasonMaxTokens
+	case "stop", "":
+		stopReason = StopReasonEndTurn
+	default:
+		stopReason = StopReasonEndTurn
+	}
+	if len(toolCalls) > 0 {
+		stopReason = StopReasonToolUse
+	}
+
+	return AgentResponse{
+		ID:         responseID,
+		Type:       "message",
+		Role:       RoleAssistant,
+		Content:    content,
+		Model:      model,
+		StopReason: stopReason,
+		Usage:      usage,
+	}, nil
 }
 
 func wrapOpenAIAPIError(body []byte, status int, err error) error {

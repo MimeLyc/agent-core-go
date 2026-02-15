@@ -93,6 +93,13 @@ func TestBuildSystemPromptNoSoul(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptEmptyWhenNoInputs(t *testing.T) {
+	prompt := buildSystemPrompt("", "", "")
+	if strings.TrimSpace(prompt) != "" {
+		t.Fatalf("expected empty system prompt when no inputs are provided, got: %q", prompt)
+	}
+}
+
 func TestReadSoulContentFromWorkDir(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteText(t, filepath.Join(dir, "SOUL.md"), "You are helpful.")

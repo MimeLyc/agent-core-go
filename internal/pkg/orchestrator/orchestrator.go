@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 
-	"github.com/MimeLyc/agent-core-go/pkg/llm"
+	"github.com/MimeLyc/agent-core-go/internal/pkg/llm"
 	"github.com/MimeLyc/agent-core-go/pkg/tools"
 )
 
@@ -12,6 +12,13 @@ type Orchestrator interface {
 	// Run executes the agent loop and returns the final result.
 	Run(ctx context.Context, req OrchestratorRequest) (OrchestratorResult, error)
 }
+
+// AgentMessage is the message model used inside the transformContext stage.
+// It can be transformed before provider-specific conversion.
+type AgentMessage = llm.Message
+
+// LLMMessage is the canonical message model sent to providers.
+type LLMMessage = llm.Message
 
 // OrchestratorRequest contains all inputs for an orchestrator run.
 type OrchestratorRequest struct {
@@ -28,7 +35,7 @@ type OrchestratorRequest struct {
 	InstructionFiles []string
 
 	// InitialMessages are the starting messages for the conversation.
-	InitialMessages []llm.Message
+	InitialMessages []AgentMessage
 
 	// Tools are the local tools available to the agent.
 	Tools []tools.Tool
@@ -37,7 +44,12 @@ type OrchestratorRequest struct {
 	MCPServers []MCPServerConfig
 
 	// MaxIterations limits the number of agent loop iterations.
+	// Non-positive values mean no iteration cap.
 	MaxIterations int
+
+	// DisableIterationLimit forces the loop to run without an iteration cap.
+	// This takes precedence over MaxIterations when true.
+	DisableIterationLimit bool
 
 	// MaxMessages limits the conversation history size to avoid API limits.
 	// When exceeded, older messages (except the first) are truncated.
@@ -47,6 +59,9 @@ type OrchestratorRequest struct {
 	// CompactConfig configures context compaction (summarization).
 	// When enabled, long conversations are summarized instead of truncated.
 	CompactConfig CompactConfig
+
+	// EnableStreaming turns on provider streaming if supported.
+	EnableStreaming bool
 
 	// SoulFile is an explicit path to the SOUL.md file.
 	// If empty, the orchestrator searches for SOUL.md in WorkDir then repo root.
@@ -59,11 +74,46 @@ type OrchestratorRequest struct {
 	// ToolContext provides execution context for tools.
 	ToolContext *tools.ToolContext
 
+	// Runtime loop input providers. These are polled at key checkpoints.
+	GetSteeringMessages LoopInputFetcher
+	GetFollowUpMessages LoopInputFetcher
+
+	// TransformContext is an optional pre-processing hook applied before default
+	// context rules and provider conversion.
+	TransformContext TransformContextHook
+
+	// ConvertToLlm is an optional conversion hook applied after context rules.
+	// It can adapt messages based on provider capabilities/protocol needs.
+	ConvertToLlm ConvertToLlmHook
+
+	// DisableDefaultContextRules disables built-in compaction/truncation/validation rules.
+	DisableDefaultContextRules bool
+
 	// Callbacks for monitoring the agent loop.
-	OnMessage    func(llm.Message)
-	OnToolCall   func(name string, input map[string]any)
-	OnToolResult func(name string, result tools.ToolResult)
+	OnMessage         func(llm.Message)
+	OnToolCall        func(name string, input map[string]any)
+	OnToolResult      func(name string, result tools.ToolResult)
+	OnSteeringApplied func(messages []llm.Message)
+	OnFollowUpApplied func(messages []llm.Message)
+	OnStreamDelta     func(delta llm.ContentBlockDelta)
 }
+
+// LoopInputSnapshot provides loop state to steering/follow-up providers.
+type LoopInputSnapshot struct {
+	Iteration      int
+	MessageCount   int
+	ToolCallCount  int
+	LastStopReason llm.StopReason
+}
+
+// LoopInputFetcher loads runtime loop input messages.
+type LoopInputFetcher func(ctx context.Context, snapshot LoopInputSnapshot) ([]llm.Message, error)
+
+// TransformContextHook transforms conversation messages before the model call.
+type TransformContextHook func(ctx context.Context, messages []AgentMessage) ([]AgentMessage, error)
+
+// ConvertToLlmHook converts messages for the selected provider.
+type ConvertToLlmHook func(ctx context.Context, messages []AgentMessage, providerName string) ([]LLMMessage, error)
 
 // MCPServerConfig configures an MCP server connection.
 type MCPServerConfig struct {

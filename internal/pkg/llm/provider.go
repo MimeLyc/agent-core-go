@@ -16,6 +16,12 @@ type LLMProvider interface {
 	Name() string
 }
 
+// StreamingProvider is an optional extension for providers that support
+// incremental response streaming.
+type StreamingProvider interface {
+	Stream(ctx context.Context, req AgentRequest, onDelta func(ContentBlockDelta)) (AgentResponse, error)
+}
+
 // LLMProviderType identifies the LLM provider backend.
 type LLMProviderType string
 
